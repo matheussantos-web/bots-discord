@@ -254,13 +254,32 @@ class PainelVagas(discord.ui.View):
             
         return embed
 
+    # O "Motor" da Fila Inteligente
+    async def promover_da_fila(self, interaction: discord.Interaction, classe: str):
+        # Se tem vaga na classe E tem alguém na fila de espera
+        if len(self.jogadores[classe]) < self.max_vagas[classe] and len(self.fila_espera[classe]) > 0:
+            # .pop(0) tira o primeiro da fila (FIFO)
+            proximo_jogador = self.fila_espera[classe].pop(0) 
+            self.jogadores[classe].append(proximo_jogador)
+            
+            # Avisa o jogador promovido no chat geral para ele se preparar
+            await interaction.channel.send(
+                f"🎉 {proximo_jogador}, uma vaga abriu e você foi puxado da fila para assumir como **{classe}**!"
+            )
+
     async def processar_clique(self, interaction: discord.Interaction, classe: str):
         usuario = interaction.user.mention
+        classe_antiga = None
         
+        # 1. Remove o usuário e descobre onde ele estava antes
         for c in self.jogadores:
-            if usuario in self.jogadores[c]: self.jogadores[c].remove(usuario)
-            if usuario in self.fila_espera[c]: self.fila_espera[c].remove(usuario)
+            if usuario in self.jogadores[c]: 
+                self.jogadores[c].remove(usuario)
+                classe_antiga = c # Guarda a informação da vaga que ele abandonou
+            if usuario in self.fila_espera[c]: 
+                self.fila_espera[c].remove(usuario)
 
+        # 2. Coloca o usuário na nova classe ou fila
         if len(self.jogadores[classe]) < self.max_vagas[classe]:
             self.jogadores[classe].append(usuario)
             await interaction.response.edit_message(embed=self.gerar_embed(), view=self)
@@ -271,23 +290,35 @@ class PainelVagas(discord.ui.View):
                 await interaction.response.edit_message(embed=self.gerar_embed(), view=self)
                 await interaction.followup.send(f"📋 As vagas principais de {classe} estão cheias. Você foi colocado na Fila de Espera!", ephemeral=True)
 
+        # 3. 🆕 Se ele abandonou uma vaga principal, puxa alguém da fila para o lugar dele!
+        if classe_antiga and classe_antiga != classe:
+            await self.promover_da_fila(interaction, classe_antiga)
+            # Atualiza o painel novamente caso alguém tenha subido
+            await interaction.message.edit(embed=self.gerar_embed(), view=self)
+
     async def sair_callback(self, interaction: discord.Interaction):
         usuario = interaction.user.mention
         removido = False
+        classe_abandonada = None
         
         for c in self.jogadores:
             if usuario in self.jogadores[c]:
                 self.jogadores[c].remove(usuario)
                 removido = True
+                classe_abandonada = c
             if usuario in self.fila_espera[c]:
                 self.fila_espera[c].remove(usuario)
                 removido = True
                 
         if removido:
             await interaction.response.edit_message(embed=self.gerar_embed(), view=self)
+            
+            # 🆕 Se ele saiu e deixou um buraco, preenche com quem está na fila
+            if classe_abandonada:
+                await self.promover_da_fila(interaction, classe_abandonada)
+                await interaction.message.edit(embed=self.gerar_embed(), view=self)
         else:
             await interaction.response.send_message("Você não está inscrito em nenhuma vaga.", ephemeral=True)
-
 @bot.command(name="vaga")
 async def vaga(ctx, *, texto: str = None):
     await ctx.message.delete()
@@ -296,18 +327,18 @@ async def vaga(ctx, *, texto: str = None):
         mensagem_ensino = (
             "📚 **Como usar o sistema de vagas:**\n\n"
             "Você precisa me dizer qual é o conteúdo e quais as classes necessárias, "
-            "separando tudo por barras `|` e dois pontos `:`\n\n"
+            "separando tudo por barras `/` e dois pontos `:`\n\n"
             "**🛠️ O molde é este:**\n"
-            "`!vaga Nome do Evento | Classe:Vaga | Classe:Vaga`\n\n"
+            "`!vaga Nome do Evento / Classe:Vaga / Classe:Vaga`\n\n"
             "**💡 Exemplos Práticos:**\n"
-            "▶️ `!vaga Masmorra Estática T8 | Tank:1 | Healer:1 | DPS:3`\n"
-            "▶️ `!vaga Gank na Black Zone | Controle:1 | Scout:1 | DPS:5`\n"
-            "▶️ `!vaga ZvZ Defesa | Engaje:3 | Locus:2 | Suporte:3 | DPS:10`"
+            "▶️ `!vaga Masmorra Estática T8 / Tank:1 / Healer:1 / DPS:3`\n"
+            "▶️ `!vaga Gank na Black Zone / Controle:1 / Scout:1 / DPS:5`\n"
+            "▶️ `!vaga ZvZ Defesa / Engaje:3 / Locus:2 / Suporte:3 / DPS:10`"
         )
         return await ctx.send(mensagem_ensino, delete_after=40)
     
     try:
-        partes = texto.split('|')
+        partes = texto.split('/')
         conteudo = partes[0].strip()
         
         definicao_vagas = {}
