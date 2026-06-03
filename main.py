@@ -22,17 +22,17 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 GUILDA_ALBION_ID = "oZercpSURfeSz9_7Mpg1-w"  
 ALIANCA_ALBION_ID = "mCKNk3EyQ8qLeNMhozFIZg" 
-CANAL_GERADOR_ID = 1510026555286360206 
+CANAL_GERADOR_ID = 1486876393035010148 
 
 TAG_GUILDA = "[DH]" 
 TAG_ALIANCA = "[ALLY]"
 
 CARGOS = {
     "aliado": 11111111111111111111,  
-    "membro": 1508849239222911066,   
-    "oficial": 1508848755779047564,  
-    "lider" : 1508845743363067955,   
-}
+    "membro": 1453482483776491702,   
+    #"oficial": 1508848755779047564,  
+    "lider" : 1453482483789070389,   
+}   
 
 # ==========================================
 #  EVENTOS DO BOT
