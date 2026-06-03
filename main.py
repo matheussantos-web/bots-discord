@@ -30,7 +30,11 @@ TAG_ALIANCA = "[ALLY]"
 CARGOS = {
     "aliado": 1453482483776491702,  
     "membro": 1511027698934485042,   
-    #"oficial": 1508848755779047564,  
+    "DIE HARD":1453515063326675178, 
+    "recrutador":1453635834535346257,
+    "moderador":1511735008463683656,
+    "caller":1454966591933387029,
+    "SUB-LIDER":1453635680696537088,
     "lider" : 1453482483789070389,   
 }   
 
@@ -47,31 +51,38 @@ async def on_ready():
 # ==========================================
 
 @bot.event
-async def on_voice_state_update(membro, antes, depois):
-    if depois.channel and depois.channel.id == CANAL_GERADOR_ID:
-        categoria = depois.channel.category
+async def on_voice_state_update(member, before, after):
+    # 1. QUANDO O USUÁRIO ENTRA NO CANAL GERADOR
+    if after.channel and after.channel.id == CANAL_GERADOR_ID:
+        guilda = member.guild
+        categoria = after.channel.category
         
+        # --- SISTEMA DE PERMISSÕES DINÂMICO ---
+        # Bloqueia o @everyone e dá acesso padrão ao criador da call (sem poder de mover ninguém)
         permissoes = {
-            membro.guild.default_role: discord.PermissionOverwrite(
-                speak=True, 
-                use_voice_activation=True 
-            )
+            guilda.default_role: discord.PermissionOverwrite(view_channel=False), 
+            member: discord.PermissionOverwrite(view_channel=True, connect=True) 
         }
         
-        nova_sala = await membro.guild.create_voice_channel(
-            name=f"🎮 {membro.display_name}", 
+        # Fazemos um loop em TODOS os cargos configurados no seu dicionário CARGOS
+        for nome, id_cargo in CARGOS.items():
+            cargo_obj = guilda.get_role(id_cargo)
+            if cargo_obj: # Se o cargo existir no servidor, libera a sala para ele
+                permissoes[cargo_obj] = discord.PermissionOverwrite(view_channel=True, connect=True)
+        
+        # Cria a sala já aplicando as permissões para todas as tags
+        novo_canal = await guilda.create_voice_channel(
+            name=f"🎮 {member.display_name}",
             category=categoria,
             overwrites=permissoes
         )
-        try:
-            await membro.move_to(nova_sala)
-        except discord.HTTPException:
-            await nova_sala.delete()
+        await member.move_to(novo_canal)
 
-    if antes.channel and antes.channel.id != CANAL_GERADOR_ID:
-        if len(antes.channel.members) == 0:
-            if antes.channel.name.startswith("🎮"):
-                await antes.channel.delete()
+    # 2. QUANDO O USUÁRIO SAI DE UMA CALL TEMPORÁRIA
+    if before.channel and before.channel.name.startswith("🎮") and before.channel.id != CANAL_GERADOR_ID:
+        # Se o canal ficar totalmente vazio, ele é deletado
+        if len(before.channel.members) == 0:
+            await before.channel.delete()
 
 # ==========================================
 #  COMANDOS DE MODERAÇÃO
