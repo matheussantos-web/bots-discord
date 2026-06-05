@@ -62,15 +62,17 @@ async def auditoria_guilda():
         if membro.bot:
             continue
 
-# --- IMUNIDADE DIPLOMÁTICA ---
-        # IDs dos cargos que o bot nunca deve rebaixar
-        cargo_lider_id = CARGOS.get("lider")
-        cargo_die_hard_id = CARGOS.get("DIE HARD")
-
-        # Se o membro tiver QUALQUER UM desses cargos na conta, o bot pula ele
-        if any(c.id in [cargo_lider_id, cargo_die_hard_id] for c in membro.roles):
-            continue
+# --- IMUNIDADE DIPLOMÁTICA (EXPANDIDA) ---
+        # Nomes exatos dos cargos blindados (conforme escritos no dicionário CARGOS)
+        nomes_imunes = ["lider", "DIE HARD", "recrutador", "moderador", "caller", "SUB-LIDER"]
         
+        # O bot pega os IDs automaticamente
+        ids_imunes = [CARGOS.get(nome) for nome in nomes_imunes if CARGOS.get(nome)]
+
+        # Se o membro tiver QUALQUER UM desses cargos, o bot pula ele e não rebaixa
+        if any(c.id in ids_imunes for c in membro.roles):
+            continue
+
         # 2. Verifica quais cargos da guilda esse membro possui (pode ser 1 ou vários)
         cargos_do_membro = [c for c in cargos_gerenciados if c in membro.roles]
 
