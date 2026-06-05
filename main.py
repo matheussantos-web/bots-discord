@@ -1,8 +1,9 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands,tasks
 import aiohttp
 import os # Necessário para ler o Token escondido na nuvem
 from keep_alive import keep_alive # Importa o servidor web fantasma
+import asyncio
 
 # ==========================================
 #  CONFIGURAÇÕES INICIAIS E INTENTS
@@ -39,6 +40,92 @@ CARGOS = {
     "lider" : 1453482483789070389,   
 }   
 
+
+# ==========================================
+# SISTEMA DE AUDITORIA DE MEMBROS (BACKGROUND TASK)
+# ==========================================
+
+@tasks.loop(hours=24)
+async def auditoria_guilda():
+    print("🔍 Iniciando ronda de auditoria diária na API do Albion...")
+    
+    guilda_discord = bot.guilds[0] 
+    
+    # 1. Pega TODOS os objetos de cargo configurados no seu sistema
+    cargos_gerenciados = []
+    for id_cargo in CARGOS.values():
+        cargo = guilda_discord.get_role(id_cargo)
+        if cargo:
+            cargos_gerenciados.append(cargo)
+
+    for membro in guilda_discord.members:
+        if membro.bot:
+            continue
+
+        # --- IMUNIDADE DIPLOMÁTICA PARA O LÍDER ---
+        # Se o membro tiver o cargo de "lider", o bot ignora ele e pula pro próximo
+        cargo_lider_id = CARGOS.get("lider")
+        if any(c.id == cargo_lider_id for c in membro.roles):
+            continue 
+
+        # 2. Verifica quais cargos da guilda esse membro possui (pode ser 1 ou vários)
+        cargos_do_membro = [c for c in cargos_gerenciados if c in membro.roles]
+
+        # Se ele não tem nenhum cargo oficial, ignoramos (é visitante ou sem registro)
+        if not cargos_do_membro:
+            continue
+
+        # Extrai o Nickname limpo (tirando a TAG [DH] ou [ALLY])
+        nick = membro.display_name
+        if " " in nick:
+            nick = nick.split(" ", 1)[1] 
+
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.get(f"https://gameinfo.albiononline.com/api/gameinfo/search?q={nick}") as resp:
+                    if resp.status != 200:
+                        await asyncio.sleep(2) 
+                        continue
+                    
+                    dados = await resp.json()
+                    jogadores = dados.get('players', [])
+                    jogador_encontrado = next((p for p in jogadores if p['Name'].lower() == nick.lower()), None)
+
+                    rebaixar = False
+
+                    # Cenário 1: Jogador deletou o boneco ou mudou de nome
+                    if not jogador_encontrado:
+                        rebaixar = True
+                    else:
+                        # Cenário 2: Verifica as IDs do jogo
+                        guild_id_jogador = jogador_encontrado.get('GuildId')
+                        alliance_id_jogador = jogador_encontrado.get('AllianceId')
+
+                        is_guilda = (guild_id_jogador == GUILDA_ALBION_ID)
+                        is_alianca = (ALIANCA_ALBION_ID and alliance_id_jogador == ALIANCA_ALBION_ID)
+
+                        # Se ele não faz parte nem da guilda e nem da aliança, é rebaixado
+                        if not is_guilda and not is_alianca:
+                            rebaixar = True
+
+                    # 3. Se detectou que está fora do jogo, tira TODOS os cargos da hierarquia
+                    if rebaixar:
+                        await membro.remove_roles(*cargos_do_membro)
+                        print(f"⚠️ {membro.display_name} foi rebaixado. Foram removidos {len(cargos_do_membro)} cargos dele.")
+                        
+                        try:
+                            await membro.send("⚠️ **Aviso Automático:** Seus cargos no Discord da guilda foram removidos porque nosso sistema detectou que você não está mais na guilda/aliança no jogo. Se isso for um erro, use o comando `!registrar` novamente na sala de recrutamento!")
+                        except discord.Forbidden:
+                            pass 
+
+            except Exception as e:
+                print(f"Erro na auditoria do jogador {nick}: {e}")
+
+        # PROTEÇÃO DE INFRAESTRUTURA
+        await asyncio.sleep(2)
+        
+    print("✅ Ronda de auditoria concluída com sucesso.")
+
 # ==========================================
 #  EVENTOS DO BOT
 # ==========================================
@@ -46,7 +133,12 @@ CARGOS = {
 @bot.event
 async def on_ready():
     print(f'🔥 Sistema Mestre online! Operando como {bot.user}.')
+    
+    # Inicia a ronda automática apenas se ela já não estiver rodando
+    if not auditoria_guilda.is_running():
+        auditoria_guilda.start()
 
+        
 # ==========================================
 #  CRIAR CALL
 # ==========================================
@@ -363,7 +455,7 @@ async def vaga(ctx, *, texto: str = None):
             
     except:
         mensagem_erro = (
-            "⚠️ **Formato incorreto!** Verifique se você esqueceu a barra vertical `|` ou os dois pontos `:`\n"
+            "⚠️ **Formato incorreto!** Verifique se você esqueceu a barra `/` ou os dois pontos `:`\n"
             "*Se tiver dúvidas, digite apenas `!vaga` para ver o tutorial.*"
         )
         return await ctx.send(mensagem_erro, delete_after=20)
