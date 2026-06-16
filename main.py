@@ -321,11 +321,55 @@ class BotaoDinamico(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         await self.view_pai.processar_clique(interaction, self.classe_nome)
 
+# --- NOVO: Formulário para forçar a entrada de um membro ---
+class ModalPuxarMembro(discord.ui.Modal, title="👑 Puxar Membro para a PT"):
+    jogador = discord.ui.TextInput(
+        label="Menção do Jogador (ex: @nick)",
+        style=discord.TextStyle.short,
+        placeholder="Digite @ e escolha o membro...",
+        required=True
+    )
+    classe = discord.ui.TextInput(
+        label="Nome da Vaga (Exatamente como no painel)",
+        style=discord.TextStyle.short,
+        placeholder="Ex: Tank, Suporte, DPS",
+        required=True
+    )
+
+    def __init__(self, view_pai):
+        super().__init__()
+        self.view_pai = view_pai
+
+    async def on_submit(self, interaction: discord.Interaction):
+        usuario = self.jogador.value.strip()
+        classe_escolhida = self.classe.value.strip()
+        
+        # 1. Valida se a classe digitada existe no evento
+        if classe_escolhida not in self.view_pai.max_vagas:
+            return await interaction.response.send_message(
+                f"❌ A classe `{classe_escolhida}` não existe neste evento. Digite exatamente como está no painel.", 
+                ephemeral=True
+            )
+
+        # 2. Garante que o formato seja uma menção <@ID>
+        if not usuario.startswith("<@") or not usuario.endswith(">"):
+            if usuario.isdigit(): 
+                usuario = f"<@{usuario}>"
+            else:
+                return await interaction.response.send_message(
+                    "❌ Formato inválido! Você precisa dar o **Ping (@)** no jogador ou colar o ID numérico dele.", 
+                    ephemeral=True
+                )
+
+        # 3. Manda para a função de inserção do painel
+        await self.view_pai.forcar_insercao(interaction, usuario, classe_escolhida)
+
 class PainelVagas(discord.ui.View):
-    def __init__(self, conteudo, definicao_vagas):
+    def __init__(self, conteudo, definicao_vagas, autor_id):
         super().__init__(timeout=None)
         self.conteudo = conteudo
         self.max_vagas = definicao_vagas
+        self.autor_id = autor_id # Memoriza quem criou o painel
         self.jogadores = {classe: [] for classe in definicao_vagas}
         self.fila_espera = {classe: [] for classe in definicao_vagas}
 
@@ -336,11 +380,23 @@ class PainelVagas(discord.ui.View):
         botao_sair.callback = self.sair_callback
         self.add_item(botao_sair)
 
-    def gerar_embed(self):
+        # Botão exclusivo para o criador da PT
+        botao_puxar = discord.ui.Button(label="Puxar Membro", style=discord.ButtonStyle.success, emoji="👑")
+        botao_puxar.callback = self.abrir_modal_lider
+        self.add_item(botao_puxar)
+
+   def gerar_embed(self):
+        # 1. O Título agora é o nome do próprio evento em MAIÚSCULAS
+        titulo_destaque = f"💥 {self.conteudo.upper()} 💥"
+        
         embed = discord.Embed(
-            title="⚔️ EVENTO FORMANDO! ⚔️", 
-            description=f"**Conteúdo:** {self.conteudo}",
-            color=discord.Color.gold()
+            title=titulo_destaque, 
+            description=(
+                f"**Líder da PT:** <@{self.autor_id}>\n"
+                f"**Status:** 🟢 Formando Grupo\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            ),
+            color=discord.Color.brand_red()
         )
         
         for classe, vagas_totais in self.max_vagas.items():
@@ -351,27 +407,24 @@ class PainelVagas(discord.ui.View):
             
             if reserva:
                 texto_reserva = "\n".join([f"⏳ *{r} (Fila)*" for r in reserva])
-                texto_final = f"{texto_jogadores}\n\n**⏱️ Fila de Espera:**\n{texto_reserva}"
+                texto_final = f"{texto_jogadores}\n\n**⏱️ Fila:**\n{texto_reserva}"
             else:
                 texto_final = texto_jogadores
 
             embed.add_field(
-                name=f"{classe} ({len(inscritos)}/{vagas_totais})", 
+                name=f"🛡️ {classe} ({len(inscritos)}/{vagas_totais})", 
                 value=texto_final, 
                 inline=True
             )
             
+        embed.set_footer(text="Clique nos botões abaixo para entrar ou sair da fila.")
         return embed
 
-    # O "Motor" da Fila Inteligente
     async def promover_da_fila(self, interaction: discord.Interaction, classe: str):
-        # Se tem vaga na classe E tem alguém na fila de espera
         if len(self.jogadores[classe]) < self.max_vagas[classe] and len(self.fila_espera[classe]) > 0:
-            # .pop(0) tira o primeiro da fila (FIFO)
             proximo_jogador = self.fila_espera[classe].pop(0) 
             self.jogadores[classe].append(proximo_jogador)
             
-            # Avisa o jogador promovido no chat geral para ele se preparar
             await interaction.channel.send(
                 f"🎉 {proximo_jogador}, uma vaga abriu e você foi puxado da fila para assumir como **{classe}**!"
             )
@@ -380,15 +433,13 @@ class PainelVagas(discord.ui.View):
         usuario = interaction.user.mention
         classe_antiga = None
         
-        # 1. Remove o usuário e descobre onde ele estava antes
         for c in self.jogadores:
             if usuario in self.jogadores[c]: 
                 self.jogadores[c].remove(usuario)
-                classe_antiga = c # Guarda a informação da vaga que ele abandonou
+                classe_antiga = c 
             if usuario in self.fila_espera[c]: 
                 self.fila_espera[c].remove(usuario)
 
-        # 2. Coloca o usuário na nova classe ou fila
         if len(self.jogadores[classe]) < self.max_vagas[classe]:
             self.jogadores[classe].append(usuario)
             await interaction.response.edit_message(embed=self.gerar_embed(), view=self)
@@ -399,10 +450,8 @@ class PainelVagas(discord.ui.View):
                 await interaction.response.edit_message(embed=self.gerar_embed(), view=self)
                 await interaction.followup.send(f"📋 As vagas principais de {classe} estão cheias. Você foi colocado na Fila de Espera!", ephemeral=True)
 
-        # 3. 🆕 Se ele abandonou uma vaga principal, puxa alguém da fila para o lugar dele!
         if classe_antiga and classe_antiga != classe:
             await self.promover_da_fila(interaction, classe_antiga)
-            # Atualiza o painel novamente caso alguém tenha subido
             await interaction.message.edit(embed=self.gerar_embed(), view=self)
 
     async def sair_callback(self, interaction: discord.Interaction):
@@ -422,12 +471,44 @@ class PainelVagas(discord.ui.View):
         if removido:
             await interaction.response.edit_message(embed=self.gerar_embed(), view=self)
             
-            # 🆕 Se ele saiu e deixou um buraco, preenche com quem está na fila
             if classe_abandonada:
                 await self.promover_da_fila(interaction, classe_abandonada)
                 await interaction.message.edit(embed=self.gerar_embed(), view=self)
         else:
             await interaction.response.send_message("Você não está inscrito em nenhuma vaga.", ephemeral=True)
+
+    # ==========================================
+    # FUNÇÕES DO DONO DA PT
+    # ==========================================
+    async def abrir_modal_lider(self, interaction: discord.Interaction):
+        # Verifica se quem clicou é o autor do comando !vaga
+        if interaction.user.id != self.autor_id:
+            return await interaction.response.send_message(
+                "❌ Acesso Negado: Apenas o criador deste evento pode puxar membros forçadamente!", 
+                ephemeral=True
+            )
+            
+        await interaction.response.send_modal(ModalPuxarMembro(self))
+
+    async def forcar_insercao(self, interaction: discord.Interaction, usuario: str, classe: str):
+        # Remove o usuário de qualquer outra vaga se ele já estiver inscrito
+        for c in self.jogadores:
+            if usuario in self.jogadores[c]: 
+                self.jogadores[c].remove(usuario)
+            if usuario in self.fila_espera[c]: 
+                self.fila_espera[c].remove(usuario)
+
+        # Insere o usuário na vaga forçada
+        if len(self.jogadores[classe]) < self.max_vagas[classe]:
+            self.jogadores[classe].append(usuario)
+            await interaction.response.edit_message(embed=self.gerar_embed(), view=self)
+            await interaction.followup.send(f"✅ Membro forçado na vaga de **{classe}** com sucesso!", ephemeral=True)
+        else:
+            self.fila_espera[classe].append(usuario)
+            await interaction.response.edit_message(embed=self.gerar_embed(), view=self)
+            await interaction.followup.send(f"⚠️ A PT estava cheia! O membro foi colocado na Fila de Espera de **{classe}**.", ephemeral=True)
+
+
 @bot.command(name="vaga")
 async def vaga(ctx, *, texto: str = None):
     await ctx.message.delete()
@@ -465,7 +546,8 @@ async def vaga(ctx, *, texto: str = None):
         )
         return await ctx.send(mensagem_erro, delete_after=20)
 
-    painel = PainelVagas(conteudo, definicao_vagas)
+    # Passa o ID de quem chamou o comando (ctx.author.id) para a classe do Painel
+    painel = PainelVagas(conteudo, definicao_vagas, ctx.author.id)
     embed_inicial = painel.gerar_embed()
     
     id_cargo_membro = CARGOS.get("membro")
