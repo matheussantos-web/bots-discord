@@ -256,9 +256,9 @@ class BotaoDinamico(discord.ui.Button):
 
 class ModalPuxarMembro(discord.ui.Modal, title="👑 Puxar Membro para a PT"):
     jogador = discord.ui.TextInput(
-        label="Menção do Jogador (ex: @nick)",
+        label="Nome, @Nick ou ID numérico",
         style=discord.TextStyle.short,
-        placeholder="Digite @ e escolha o membro...",
+        placeholder="Ex: @[DH] Zezinho",
         required=True
     )
     classe = discord.ui.TextInput(
@@ -273,19 +273,41 @@ class ModalPuxarMembro(discord.ui.Modal, title="👑 Puxar Membro para a PT"):
         self.view_pai = view_pai
 
     async def on_submit(self, interaction: discord.Interaction):
-        usuario = self.jogador.value.strip()
+        usuario_input = self.jogador.value.strip()
         classe_escolhida = self.classe.value.strip()
         
+        # 1. Valida se a classe existe
         if classe_escolhida not in self.view_pai.max_vagas:
             return await interaction.response.send_message(f"❌ A classe `{classe_escolhida}` não existe.", ephemeral=True)
 
-        if not usuario.startswith("<@") or not usuario.endswith(">"):
-            if usuario.isdigit(): 
-                usuario = f"<@{usuario}>"
-            else:
-                return await interaction.response.send_message("❌ Formato inválido! Use o @Ping.", ephemeral=True)
+        # 2. Busca Inteligente do Jogador
+        usuario_final = None
+        
+        if usuario_input.startswith("<@") and usuario_input.endswith(">"):
+            # Já é um ping copiado e colado
+            usuario_final = usuario_input 
+        elif usuario_input.isdigit():
+            # É o ID numérico do Discord colado
+            usuario_final = f"<@{usuario_input}>" 
+        else:
+            # É um nome digitado (ex: @[DH] MagaDoBan). O bot vai procurar no servidor!
+            nome_busca = usuario_input.lstrip('@').strip().lower()
+            
+            for membro in interaction.guild.members:
+                # Procura tanto pelo Apelido quanto pelo Nome Original
+                if membro.display_name.lower() == nome_busca or membro.name.lower() == nome_busca:
+                    usuario_final = membro.mention
+                    break
+            
+            if not usuario_final:
+                return await interaction.response.send_message(
+                    f"❌ Não encontrei ninguém com o nome `{usuario_input}` no servidor.\n"
+                    "*Dica: Digite exatamente igual ao apelido do Discord ou cole o ID numérico.*", 
+                    ephemeral=True
+                )
 
-        await self.view_pai.forcar_insercao(interaction, usuario, classe_escolhida)
+        # 3. Manda para o painel com o ping correto
+        await self.view_pai.forcar_insercao(interaction, usuario_final, classe_escolhida)
 
 class PainelVagas(discord.ui.View):
     def __init__(self, conteudo, definicao_vagas, autor_id, unix_timestamp=None):
