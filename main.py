@@ -384,8 +384,7 @@ class PainelVagas(discord.ui.View):
         botao_puxar = discord.ui.Button(label="Puxar Membro", style=discord.ButtonStyle.success, emoji="👑")
         botao_puxar.callback = self.abrir_modal_lider
         self.add_item(botao_puxar)
-
-  def gerar_embed(self):
+def gerar_embed(self):
         titulo_destaque = f"💥 {self.conteudo.upper()} 💥"
         
         status_texto = "🟢 Formando Grupo"
@@ -423,7 +422,7 @@ class PainelVagas(discord.ui.View):
         embed.set_footer(text="Clique nos botões abaixo para entrar ou sair da fila.")
         return embed
 
-    async def promover_da_fila(self, interaction: discord.Interaction, classe: str):
+async def promover_da_fila(self, interaction: discord.Interaction, classe: str):
         if len(self.jogadores[classe]) < self.max_vagas[classe] and len(self.fila_espera[classe]) > 0:
             proximo_jogador = self.fila_espera[classe].pop(0) 
             self.jogadores[classe].append(proximo_jogador)
@@ -432,7 +431,7 @@ class PainelVagas(discord.ui.View):
                 f"🎉 {proximo_jogador}, uma vaga abriu e você foi puxado da fila para assumir como **{classe}**!"
             )
 
-    async def processar_clique(self, interaction: discord.Interaction, classe: str):
+async def processar_clique(self, interaction: discord.Interaction, classe: str):
         usuario = interaction.user.mention
         classe_antiga = None
         
@@ -457,7 +456,7 @@ class PainelVagas(discord.ui.View):
             await self.promover_da_fila(interaction, classe_antiga)
             await interaction.message.edit(embed=self.gerar_embed(), view=self)
 
-    async def sair_callback(self, interaction: discord.Interaction):
+async def sair_callback(self, interaction: discord.Interaction):
         usuario = interaction.user.mention
         removido = False
         classe_abandonada = None
@@ -484,7 +483,7 @@ class PainelVagas(discord.ui.View):
     # FUNÇÕES DO DONO DA PT
     # ==========================================
     
-    async def abrir_modal_lider(self, interaction: discord.Interaction):
+async def abrir_modal_lider(self, interaction: discord.Interaction):
         # Verifica se quem clicou é o autor do comando !vaga
         if interaction.user.id != self.autor_id:
             return await interaction.response.send_message(
@@ -494,7 +493,7 @@ class PainelVagas(discord.ui.View):
             
         await interaction.response.send_modal(ModalPuxarMembro(self))
 
-    async def forcar_insercao(self, interaction: discord.Interaction, usuario: str, classe: str):
+async def forcar_insercao(self, interaction: discord.Interaction, usuario: str, classe: str):
         # Remove o usuário de qualquer outra vaga se ele já estiver inscrito
         for c in self.jogadores:
             if usuario in self.jogadores[c]: 
