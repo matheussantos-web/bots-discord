@@ -385,15 +385,18 @@ class PainelVagas(discord.ui.View):
         botao_puxar.callback = self.abrir_modal_lider
         self.add_item(botao_puxar)
 
-   def gerar_embed(self):
-        # 1. O Título agora é o nome do próprio evento em MAIÚSCULAS
+  def gerar_embed(self):
         titulo_destaque = f"💥 {self.conteudo.upper()} 💥"
+        
+        status_texto = "🟢 Formando Grupo"
+        if self.unix_timestamp:
+            status_texto += f" | ⏱️ **Começa:** <t:{self.unix_timestamp}:R>"
         
         embed = discord.Embed(
             title=titulo_destaque, 
             description=(
                 f"**Líder da PT:** <@{self.autor_id}>\n"
-                f"**Status:** 🟢 Formando Grupo\n"
+                f"**Status:** {status_texto}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
             ),
             color=discord.Color.brand_red()
@@ -480,6 +483,7 @@ class PainelVagas(discord.ui.View):
     # ==========================================
     # FUNÇÕES DO DONO DA PT
     # ==========================================
+    
     async def abrir_modal_lider(self, interaction: discord.Interaction):
         # Verifica se quem clicou é o autor do comando !vaga
         if interaction.user.id != self.autor_id:
@@ -560,4 +564,5 @@ async def vaga(ctx, *, texto: str = None):
 # ==========================================
 
 keep_alive() # Liga o servidor fantasma
+
 bot.run(os.getenv('TOKEN_DO_BOT')) # Lê a senha do cofre de forma segura
