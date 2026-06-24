@@ -519,14 +519,11 @@ async def vaga(ctx, *, texto: str = None):
     if texto is None:
         mensagem_ensino = (
             "📚 **Como usar o sistema de vagas:**\n\n"
-            "Você precisa me dizer qual é o conteúdo e quais as classes necessárias, "
-            "separando tudo por barras `/` e dois pontos `:`\n\n"
-            "**🛠️ O molde é este:**\n"
-            "`!vaga Nome do Evento / Classe:Vaga / Classe:Vaga`\n\n"
-            "**💡 Exemplos Práticos:**\n"
+            "Você precisa me dizer o conteúdo, as classes e, opcionalmente, o horário.\n"
+            "Separe tudo por barras `/` e use dois pontos `:` para as vagas ou horas.\n\n"
+            "**🛠️ Exemplos Práticos:**\n"
             "▶️ `!vaga Masmorra Estática T8 / Tank:1 / Healer:1 / DPS:3`\n"
-            "▶️ `!vaga Gank na Black Zone / Controle:1 / Scout:1 / DPS:5`\n"
-            "▶️ `!vaga ZvZ Defesa / Engaje:3 / Locus:2 / Suporte:3 / DPS:10`"
+            "▶️ `!vaga Gank na Black Zone / Controle:1 / DPS:5 / 20:30`"
         )
         return await ctx.send(mensagem_ensino, delete_after=40)
     
@@ -535,22 +532,64 @@ async def vaga(ctx, *, texto: str = None):
         conteudo = partes[0].strip()
         
         definicao_vagas = {}
+        horario_evento = None
+        
         for parte in partes[1:]:
-            nome_classe, qtd = parte.split(':')
+            parte_limpa = parte.strip()
+            
+            # Proteção 1: Ignora espaços vazios se houver barras duplas (//) ou barra no final
+            if not parte_limpa:
+                continue
+                
+            # Proteção 2: Identifica se é o horário do evento (ex: 20:00)
+            if ":" in parte_limpa and len(parte_limpa) <= 5:
+                partes_tempo = parte_limpa.split(':')
+                if len(partes_tempo) == 2:
+                    h, m = partes_tempo
+                    if h.isdigit() and m.isdigit() and len(h) <= 2 and len(m) == 2:
+                        horario_evento = parte_limpa
+                        continue 
+                        
+            # Proteção 3: Se não for horário, tem que ser classe. Se faltar dois pontos, trava.
+            if ":" not in parte_limpa:
+                raise ValueError(f"Falta os dois pontos (:) na classe '{parte_limpa}'")
+                
+            nome_classe, qtd = parte_limpa.split(':', 1)
+            
+            if not qtd.strip().isdigit():
+                raise ValueError(f"A quantidade de vagas não é um número em '{parte_limpa}'")
+                
             definicao_vagas[nome_classe.strip()] = int(qtd.strip())
             
         if not definicao_vagas:
-            raise ValueError()
+            raise ValueError("Nenhuma vaga foi definida.")
             
-    except:
+    except Exception as e:
         mensagem_erro = (
-            "⚠️ **Formato incorreto!** Verifique se você esqueceu a barra `/` ou os dois pontos `:`\n"
-            "*Se tiver dúvidas, digite apenas `!vaga` para ver o tutorial.*"
+            f"⚠️ **Formato incorreto!** O bot detectou um erro de digitação.\n"
+            f"*Dica: Verifique se esqueceu os dois pontos (:) ou se deixou letras onde deveria ser a quantidade.*\n\n"
+            f"**💡 Exemplo correto:** `!vaga Gank / Tank:1 / DPS:3`"
         )
         return await ctx.send(mensagem_erro, delete_after=20)
 
-    # Passa o ID de quem chamou o comando (ctx.author.id) para a classe do Painel
-    painel = PainelVagas(conteudo, definicao_vagas, ctx.author.id)
+    # PROCESSAMENTO DO TEMPO (Fuso UTC-4)
+    unix_timestamp = None
+    if horario_evento:
+        try:
+            h_str, m_str = horario_evento.split(':')
+            fuso = timezone(timedelta(hours=-4))
+            agora = datetime.now(fuso)
+            data_evento = agora.replace(hour=int(h_str), minute=int(m_str), second=0, microsecond=0)
+            
+            if data_evento < agora:
+                data_evento += timedelta(days=1)
+                
+            unix_timestamp = int(data_evento.timestamp())
+        except Exception as e:
+            print(f"Erro ao calcular tempo: {e}")
+
+    # Inicia o painel enviando o horário
+    painel = PainelVagas(conteudo, definicao_vagas, ctx.author.id, unix_timestamp)
     embed_inicial = painel.gerar_embed()
     
     id_cargo_membro = CARGOS.get("membro")
