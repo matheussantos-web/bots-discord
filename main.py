@@ -1,9 +1,10 @@
 import discord
-from discord.ext import commands,tasks
+from discord.ext import commands, tasks
 import aiohttp
-import os # Necessário para ler o Token escondido na nuvem
-from keep_alive import keep_alive # Importa o servidor web fantasma
+import os
+from keep_alive import keep_alive
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 # ==========================================
 #  CONFIGURAÇÕES INICIAIS E INTENTS
@@ -32,14 +33,13 @@ CARGOS = {
     "aliado": 1453482483776491702,
     "friends": 1453482483776491701, 
     "membro": 1511027698934485042,   
-    "DIE HARD":1453515063326675178, 
-    "recrutador":1453635834535346257,
-    "moderador":1511735008463683656,
-    "caller":1454966591933387029,
-    "SUB-LIDER":1453635680696537088,
-    "lider" : 1453482483789070389,   
+    "DIE HARD": 1453515063326675178, 
+    "recrutador": 1453635834535346257,
+    "moderador": 1511735008463683656,
+    "caller": 1454966591933387029,
+    "SUB-LIDER": 1453635680696537088,
+    "lider": 1453482483789070389,   
 }   
-
 
 # ==========================================
 # SISTEMA DE AUDITORIA DE MEMBROS (BACKGROUND TASK)
@@ -51,7 +51,6 @@ async def auditoria_guilda():
     
     guilda_discord = bot.guilds[0] 
     
-    # 1. Pega TODOS os objetos de cargo configurados no seu sistema
     cargos_gerenciados = []
     for id_cargo in CARGOS.values():
         cargo = guilda_discord.get_role(id_cargo)
@@ -62,25 +61,18 @@ async def auditoria_guilda():
         if membro.bot:
             continue
 
-# --- IMUNIDADE DIPLOMÁTICA (EXPANDIDA) ---
-        # Nomes exatos dos cargos blindados (conforme escritos no dicionário CARGOS)
+        # --- IMUNIDADE DIPLOMÁTICA ---
         nomes_imunes = ["lider", "DIE HARD", "recrutador", "moderador", "caller", "SUB-LIDER"]
-        
-        # O bot pega os IDs automaticamente
         ids_imunes = [CARGOS.get(nome) for nome in nomes_imunes if CARGOS.get(nome)]
 
-        # Se o membro tiver QUALQUER UM desses cargos, o bot pula ele e não rebaixa
         if any(c.id in ids_imunes for c in membro.roles):
             continue
 
-        # 2. Verifica quais cargos da guilda esse membro possui (pode ser 1 ou vários)
         cargos_do_membro = [c for c in cargos_gerenciados if c in membro.roles]
 
-        # Se ele não tem nenhum cargo oficial, ignoramos (é visitante ou sem registro)
         if not cargos_do_membro:
             continue
 
-        # Extrai o Nickname limpo (tirando a TAG [DH] ou [ALLY])
         nick = membro.display_name
         if " " in nick:
             nick = nick.split(" ", 1)[1] 
@@ -98,35 +90,30 @@ async def auditoria_guilda():
 
                     rebaixar = False
 
-                    # Cenário 1: Jogador deletou o boneco ou mudou de nome
                     if not jogador_encontrado:
                         rebaixar = True
                     else:
-                        # Cenário 2: Verifica as IDs do jogo
                         guild_id_jogador = jogador_encontrado.get('GuildId')
                         alliance_id_jogador = jogador_encontrado.get('AllianceId')
 
                         is_guilda = (guild_id_jogador == GUILDA_ALBION_ID)
                         is_alianca = (ALIANCA_ALBION_ID and alliance_id_jogador == ALIANCA_ALBION_ID)
 
-                        # Se ele não faz parte nem da guilda e nem da aliança, é rebaixado
                         if not is_guilda and not is_alianca:
                             rebaixar = True
 
-                    # 3. Se detectou que está fora do jogo, tira TODOS os cargos da hierarquia
                     if rebaixar:
                         await membro.remove_roles(*cargos_do_membro)
-                        print(f"⚠️ {membro.display_name} foi rebaixado. Foram removidos {len(cargos_do_membro)} cargos dele.")
+                        print(f"⚠️ {membro.display_name} foi rebaixado.")
                         
                         try:
-                            await membro.send("⚠️ **Aviso Automático:** Seus cargos no Discord da guilda foram removidos porque nosso sistema detectou que você não está mais na guilda/aliança no jogo. Se isso for um erro, use o comando `!registrar` novamente na sala de recrutamento!")
+                            await membro.send("⚠️ **Aviso Automático:** Seus cargos no Discord da guilda foram removidos porque nosso sistema detectou que você não está mais na guilda/aliança no jogo. Se isso for um erro, use o comando `!registrar` novamente!")
                         except discord.Forbidden:
                             pass 
 
             except Exception as e:
                 print(f"Erro na auditoria do jogador {nick}: {e}")
 
-        # PROTEÇÃO DE INFRAESTRUTURA
         await asyncio.sleep(2)
         
     print("✅ Ronda de auditoria concluída com sucesso.")
@@ -139,10 +126,8 @@ async def auditoria_guilda():
 async def on_ready():
     print(f'🔥 Sistema Mestre online! Operando como {bot.user}.')
     
-    # Inicia a ronda automática apenas se ela já não estiver rodando
     if not auditoria_guilda.is_running():
         auditoria_guilda.start()
-
         
 # ==========================================
 #  CRIAR CALL
@@ -150,25 +135,20 @@ async def on_ready():
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    # 1. QUANDO O USUÁRIO ENTRA NO CANAL GERADOR
     if after.channel and after.channel.id == CANAL_GERADOR_ID:
         guilda = member.guild
         categoria = after.channel.category
         
-        # --- SISTEMA DE PERMISSÕES DINÂMICO ---
-        # Bloqueia o @everyone e dá acesso padrão ao criador da call (sem poder de mover ninguém)
         permissoes = {
             guilda.default_role: discord.PermissionOverwrite(view_channel=False), 
             member: discord.PermissionOverwrite(view_channel=True, connect=True) 
         }
         
-        # Fazemos um loop em TODOS os cargos configurados no seu dicionário CARGOS
         for nome, id_cargo in CARGOS.items():
             cargo_obj = guilda.get_role(id_cargo)
-            if cargo_obj: # Se o cargo existir no servidor, libera a sala para ele
+            if cargo_obj: 
                 permissoes[cargo_obj] = discord.PermissionOverwrite(view_channel=True, connect=True)
         
-        # Cria a sala já aplicando as permissões para todas as tags
         novo_canal = await guilda.create_voice_channel(
             name=f"🎮 {member.display_name}",
             category=categoria,
@@ -176,57 +156,22 @@ async def on_voice_state_update(member, before, after):
         )
         await member.move_to(novo_canal)
 
-    # 2. QUANDO O USUÁRIO SAI DE UMA CALL TEMPORÁRIA
     if before.channel and before.channel.name.startswith("🎮") and before.channel.id != CANAL_GERADOR_ID:
-        # Se o canal ficar totalmente vazio, ele é deletado
         if len(before.channel.members) == 0:
             await before.channel.delete()
 
 # ==========================================
-#  COMANDOS DE MODERAÇÃO
+#  COMANDOS GERAIS
 # ==========================================
 
 @bot.command()
 async def ping(ctx):
     await ctx.send("Pong! Todos os sistemas operacionais.")
 
-# @bot.command()
-# async def mudarnick(ctx, membro: discord.Member, *, novo_nick: str):
-#     try:
-#         await membro.edit(nick=novo_nick)
-#         await ctx.send(f"Feito! O nick de {membro.mention} foi alterado para **{novo_nick}**.")
-#     except discord.Forbidden:
-#         await ctx.send("Erro de permissão: Meu cargo precisa estar acima do cargo do usuário!")
-
-# @bot.command()
-# async def dar_cargo(ctx, membro: discord.Member, nivel: str):
-#     nivel = nivel.lower()
-    
-#     if nivel not in CARGOS:
-#         await ctx.send("Nível inválido! Escolha: padrao, membro, lider_mediano, lider_alto.")
-#         return
-
-#     cargo_escolhido = ctx.guild.get_role(CARGOS[nivel])
-    
-#     if cargo_escolhido is None:
-#         await ctx.send("Aviso: O ID do cargo não foi encontrado. Atualize o dicionário de CARGOS no código.")
-#         return
-        
-#     try:
-#         await membro.add_roles(cargo_escolhido)
-#         await ctx.send(f"Sucesso! {membro.mention} recebeu o cargo **{cargo_escolhido.name}**.")
-#     except discord.Forbidden:
-#         await ctx.send("Erro: Meu cargo está abaixo do cargo que você está tentando dar!")
-
-# ==========================================
-# PAINEL VISUAL DE INSTRUÇÕES
-# ==========================================
-
 @bot.command(name="painel_registro")
 @commands.has_permissions(administrator=True) 
 async def painel_registro(ctx):
     await ctx.message.delete()
-    
     embed = discord.Embed(
         title="🛡️ PORTAL DE REGISTRO 🛡️",
         description=(
@@ -241,19 +186,11 @@ async def painel_registro(ctx):
     embed.set_thumbnail(url=ctx.guild.icon.url if ctx.guild.icon else None)
     await ctx.send(embed=embed)
 
-# ==========================================
-# COMANDO DE REGISTRO 
-# ==========================================
-
 @bot.command(name="registrar")
 async def registrar(ctx, *, nick: str = None):
     await ctx.message.delete()
-    
     if not nick:
-        return await ctx.send(
-            f"⚠️ {ctx.author.mention}, você esqueceu de digitar o seu nome do jogo! Use `!registrar SeuNick`.", 
-            delete_after=10
-        )
+        return await ctx.send(f"⚠️ {ctx.author.mention}, use `!registrar SeuNick`.", delete_after=10)
         
     msg_aviso = await ctx.send(f"🔍 Buscando **{nick}** nos servidores do Albion, aguarde um momento...")
     
@@ -261,15 +198,14 @@ async def registrar(ctx, *, nick: str = None):
         async with aiohttp.ClientSession() as session:
             async with session.get(f"https://gameinfo.albiononline.com/api/gameinfo/search?q={nick}") as resp:
                 if resp.status != 200:
-                    return await msg_aviso.edit(content="❌ Erro ao conectar com o Albion. Tente novamente mais tarde.")
+                    return await msg_aviso.edit(content="❌ Erro ao conectar com o Albion. Tente novamente.")
                 
                 dados = await resp.json()
                 jogadores = dados.get('players', [])
-                
                 jogador_encontrado = next((p for p in jogadores if p['Name'].lower() == nick.lower()), None)
                         
                 if not jogador_encontrado:
-                    return await msg_aviso.edit(content=f"❌ O jogador **{nick}** não foi encontrado no Albion!")
+                    return await msg_aviso.edit(content=f"❌ O jogador **{nick}** não foi encontrado!")
 
                 guild_id_jogador = jogador_encontrado.get('GuildId')
                 alliance_id_jogador = jogador_encontrado.get('AllianceId')
@@ -283,21 +219,18 @@ async def registrar(ctx, *, nick: str = None):
                     cargo_dar = ctx.guild.get_role(CARGOS["membro"])
                     nova_tag = f"{TAG_GUILDA} {nome_correto}"
                     mensagem_final = f"✅ **Sucesso!** Bem-vindo à guilda, {ctx.author.mention}!"
-                    
                 elif ALIANCA_ALBION_ID and alliance_id_jogador == ALIANCA_ALBION_ID:
                     cargo_dar = ctx.guild.get_role(CARGOS["aliado"])
                     nova_tag = f"{TAG_ALIANCA} {nome_correto}"
-                    mensagem_final = f"🤝 **Sucesso!** Você foi reconhecido como nosso Aliado, {ctx.author.mention}!"
-                    
+                    mensagem_final = f"🤝 **Sucesso!** Aliado reconhecido, {ctx.author.mention}!"
                 else:
-                    return await msg_aviso.edit(content=f"❌ Acesso Negado: O jogador **{nome_correto}** não pertence à nossa Guilda ou Aliança.")
+                    return await msg_aviso.edit(content=f"❌ Acesso Negado: Você não pertence à Guilda/Aliança.")
 
                 if cargo_dar:
                     try:
                         await ctx.author.add_roles(cargo_dar)
                     except discord.Forbidden:
-                        mensagem_final += "\n⚠️ *Aviso: Não consegui te dar o cargo. O meu cargo de Bot precisa estar no topo da lista do servidor!*"
-                
+                        pass
                 try:
                     await ctx.author.edit(nick=nova_tag[:32])
                 except discord.Forbidden:
@@ -306,10 +239,10 @@ async def registrar(ctx, *, nick: str = None):
                 await msg_aviso.edit(content=mensagem_final)
 
     except Exception as e:
-        await msg_aviso.edit(content=f"⚠️ Ocorreu um erro interno no bot: {e}")
+        await msg_aviso.edit(content=f"⚠️ Ocorreu um erro interno: {e}")
 
 # ==========================================
-# SISTEMA DE VAGAS COM FILA DE ESPERA
+# SISTEMA DE VAGAS (LFG)
 # ==========================================
 
 class BotaoDinamico(discord.ui.Button):
@@ -321,7 +254,6 @@ class BotaoDinamico(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         await self.view_pai.processar_clique(interaction, self.classe_nome)
 
-# --- NOVO: Formulário para forçar a entrada de um membro ---
 class ModalPuxarMembro(discord.ui.Modal, title="👑 Puxar Membro para a PT"):
     jogador = discord.ui.TextInput(
         label="Menção do Jogador (ex: @nick)",
@@ -344,32 +276,24 @@ class ModalPuxarMembro(discord.ui.Modal, title="👑 Puxar Membro para a PT"):
         usuario = self.jogador.value.strip()
         classe_escolhida = self.classe.value.strip()
         
-        # 1. Valida se a classe digitada existe no evento
         if classe_escolhida not in self.view_pai.max_vagas:
-            return await interaction.response.send_message(
-                f"❌ A classe `{classe_escolhida}` não existe neste evento. Digite exatamente como está no painel.", 
-                ephemeral=True
-            )
+            return await interaction.response.send_message(f"❌ A classe `{classe_escolhida}` não existe.", ephemeral=True)
 
-        # 2. Garante que o formato seja uma menção <@ID>
         if not usuario.startswith("<@") or not usuario.endswith(">"):
             if usuario.isdigit(): 
                 usuario = f"<@{usuario}>"
             else:
-                return await interaction.response.send_message(
-                    "❌ Formato inválido! Você precisa dar o **Ping (@)** no jogador ou colar o ID numérico dele.", 
-                    ephemeral=True
-                )
+                return await interaction.response.send_message("❌ Formato inválido! Use o @Ping.", ephemeral=True)
 
-        # 3. Manda para a função de inserção do painel
         await self.view_pai.forcar_insercao(interaction, usuario, classe_escolhida)
 
 class PainelVagas(discord.ui.View):
-    def __init__(self, conteudo, definicao_vagas, autor_id):
+    def __init__(self, conteudo, definicao_vagas, autor_id, unix_timestamp=None):
         super().__init__(timeout=None)
         self.conteudo = conteudo
         self.max_vagas = definicao_vagas
-        self.autor_id = autor_id # Memoriza quem criou o painel
+        self.autor_id = autor_id 
+        self.unix_timestamp = unix_timestamp 
         self.jogadores = {classe: [] for classe in definicao_vagas}
         self.fila_espera = {classe: [] for classe in definicao_vagas}
 
@@ -380,11 +304,11 @@ class PainelVagas(discord.ui.View):
         botao_sair.callback = self.sair_callback
         self.add_item(botao_sair)
 
-        # Botão exclusivo para o criador da PT
         botao_puxar = discord.ui.Button(label="Puxar Membro", style=discord.ButtonStyle.success, emoji="👑")
         botao_puxar.callback = self.abrir_modal_lider
         self.add_item(botao_puxar)
-def gerar_embed(self):
+
+    def gerar_embed(self):
         titulo_destaque = f"💥 {self.conteudo.upper()} 💥"
         
         status_texto = "🟢 Formando Grupo"
@@ -393,18 +317,13 @@ def gerar_embed(self):
         
         embed = discord.Embed(
             title=titulo_destaque, 
-            description=(
-                f"**Líder da PT:** <@{self.autor_id}>\n"
-                f"**Status:** {status_texto}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            ),
+            description=f"**Líder da PT:** <@{self.autor_id}>\n**Status:** {status_texto}\n━━━━━━━━━━━━━━━━━━━━━━\n",
             color=discord.Color.brand_red()
         )
         
         for classe, vagas_totais in self.max_vagas.items():
             inscritos = self.jogadores[classe]
             reserva = self.fila_espera[classe]
-            
             texto_jogadores = "\n".join(inscritos) if inscritos else "*Vazio*"
             
             if reserva:
@@ -413,25 +332,18 @@ def gerar_embed(self):
             else:
                 texto_final = texto_jogadores
 
-            embed.add_field(
-                name=f"🛡️ {classe} ({len(inscritos)}/{vagas_totais})", 
-                value=texto_final, 
-                inline=True
-            )
+            embed.add_field(name=f"🛡️ {classe} ({len(inscritos)}/{vagas_totais})", value=texto_final, inline=True)
             
         embed.set_footer(text="Clique nos botões abaixo para entrar ou sair da fila.")
         return embed
 
-async def promover_da_fila(self, interaction: discord.Interaction, classe: str):
+    async def promover_da_fila(self, interaction: discord.Interaction, classe: str):
         if len(self.jogadores[classe]) < self.max_vagas[classe] and len(self.fila_espera[classe]) > 0:
             proximo_jogador = self.fila_espera[classe].pop(0) 
             self.jogadores[classe].append(proximo_jogador)
-            
-            await interaction.channel.send(
-                f"🎉 {proximo_jogador}, uma vaga abriu e você foi puxado da fila para assumir como **{classe}**!"
-            )
+            await interaction.channel.send(f"🎉 {proximo_jogador}, uma vaga abriu e você assumiu como **{classe}**!")
 
-async def processar_clique(self, interaction: discord.Interaction, classe: str):
+    async def processar_clique(self, interaction: discord.Interaction, classe: str):
         usuario = interaction.user.mention
         classe_antiga = None
         
@@ -445,18 +357,17 @@ async def processar_clique(self, interaction: discord.Interaction, classe: str):
         if len(self.jogadores[classe]) < self.max_vagas[classe]:
             self.jogadores[classe].append(usuario)
             await interaction.response.edit_message(embed=self.gerar_embed(), view=self)
-            
         else:
             if usuario not in self.fila_espera[classe]:
                 self.fila_espera[classe].append(usuario)
                 await interaction.response.edit_message(embed=self.gerar_embed(), view=self)
-                await interaction.followup.send(f"📋 As vagas principais de {classe} estão cheias. Você foi colocado na Fila de Espera!", ephemeral=True)
+                await interaction.followup.send(f"📋 Fila de Espera para {classe}!", ephemeral=True)
 
         if classe_antiga and classe_antiga != classe:
             await self.promover_da_fila(interaction, classe_antiga)
             await interaction.message.edit(embed=self.gerar_embed(), view=self)
 
-async def sair_callback(self, interaction: discord.Interaction):
+    async def sair_callback(self, interaction: discord.Interaction):
         usuario = interaction.user.mention
         removido = False
         classe_abandonada = None
@@ -472,76 +383,51 @@ async def sair_callback(self, interaction: discord.Interaction):
                 
         if removido:
             await interaction.response.edit_message(embed=self.gerar_embed(), view=self)
-            
             if classe_abandonada:
                 await self.promover_da_fila(interaction, classe_abandonada)
                 await interaction.message.edit(embed=self.gerar_embed(), view=self)
         else:
             await interaction.response.send_message("Você não está inscrito em nenhuma vaga.", ephemeral=True)
 
-    # ==========================================
-    # FUNÇÕES DO DONO DA PT
-    # ==========================================
-    
-async def abrir_modal_lider(self, interaction: discord.Interaction):
-        # Verifica se quem clicou é o autor do comando !vaga
+    async def abrir_modal_lider(self, interaction: discord.Interaction):
         if interaction.user.id != self.autor_id:
-            return await interaction.response.send_message(
-                "❌ Acesso Negado: Apenas o criador deste evento pode puxar membros forçadamente!", 
-                ephemeral=True
-            )
-            
+            return await interaction.response.send_message("❌ Acesso Negado: Apenas o criador pode puxar membros!", ephemeral=True)
         await interaction.response.send_modal(ModalPuxarMembro(self))
 
-async def forcar_insercao(self, interaction: discord.Interaction, usuario: str, classe: str):
-        # Remove o usuário de qualquer outra vaga se ele já estiver inscrito
+    async def forcar_insercao(self, interaction: discord.Interaction, usuario: str, classe: str):
         for c in self.jogadores:
             if usuario in self.jogadores[c]: 
                 self.jogadores[c].remove(usuario)
             if usuario in self.fila_espera[c]: 
                 self.fila_espera[c].remove(usuario)
 
-        # Insere o usuário na vaga forçada
         if len(self.jogadores[classe]) < self.max_vagas[classe]:
             self.jogadores[classe].append(usuario)
             await interaction.response.edit_message(embed=self.gerar_embed(), view=self)
-            await interaction.followup.send(f"✅ Membro forçado na vaga de **{classe}** com sucesso!", ephemeral=True)
+            await interaction.followup.send(f"✅ Membro forçado na vaga de **{classe}**!", ephemeral=True)
         else:
             self.fila_espera[classe].append(usuario)
             await interaction.response.edit_message(embed=self.gerar_embed(), view=self)
-            await interaction.followup.send(f"⚠️ A PT estava cheia! O membro foi colocado na Fila de Espera de **{classe}**.", ephemeral=True)
-
+            await interaction.followup.send(f"⚠️ Fila de Espera de **{classe}**.", ephemeral=True)
 
 @bot.command(name="vaga")
 async def vaga(ctx, *, texto: str = None):
     await ctx.message.delete()
     
     if texto is None:
-        mensagem_ensino = (
-            "📚 **Como usar o sistema de vagas:**\n\n"
-            "Você precisa me dizer o conteúdo, as classes e, opcionalmente, o horário.\n"
-            "Separe tudo por barras `/` e use dois pontos `:` para as vagas ou horas.\n\n"
-            "**🛠️ Exemplos Práticos:**\n"
-            "▶️ `!vaga Masmorra Estática T8 / Tank:1 / Healer:1 / DPS:3`\n"
-            "▶️ `!vaga Gank na Black Zone / Controle:1 / DPS:5 / 20:30`"
-        )
-        return await ctx.send(mensagem_ensino, delete_after=40)
+        return await ctx.send("📚 **Molde:** `!vaga Gank / Tank:1 / DPS:5 / 20:30`", delete_after=20)
     
     try:
         partes = texto.split('/')
         conteudo = partes[0].strip()
-        
         definicao_vagas = {}
         horario_evento = None
         
         for parte in partes[1:]:
             parte_limpa = parte.strip()
-            
-            # Proteção 1: Ignora espaços vazios se houver barras duplas (//) ou barra no final
             if not parte_limpa:
                 continue
                 
-            # Proteção 2: Identifica se é o horário do evento (ex: 20:00)
             if ":" in parte_limpa and len(parte_limpa) <= 5:
                 partes_tempo = parte_limpa.split(':')
                 if len(partes_tempo) == 2:
@@ -550,29 +436,22 @@ async def vaga(ctx, *, texto: str = None):
                         horario_evento = parte_limpa
                         continue 
                         
-            # Proteção 3: Se não for horário, tem que ser classe. Se faltar dois pontos, trava.
             if ":" not in parte_limpa:
-                raise ValueError(f"Falta os dois pontos (:) na classe '{parte_limpa}'")
+                raise ValueError()
                 
             nome_classe, qtd = parte_limpa.split(':', 1)
-            
             if not qtd.strip().isdigit():
-                raise ValueError(f"A quantidade de vagas não é um número em '{parte_limpa}'")
+                raise ValueError()
                 
             definicao_vagas[nome_classe.strip()] = int(qtd.strip())
             
         if not definicao_vagas:
-            raise ValueError("Nenhuma vaga foi definida.")
+            raise ValueError()
             
     except Exception as e:
-        mensagem_erro = (
-            f"⚠️ **Formato incorreto!** O bot detectou um erro de digitação.\n"
-            f"*Dica: Verifique se esqueceu os dois pontos (:) ou se deixou letras onde deveria ser a quantidade.*\n\n"
-            f"**💡 Exemplo correto:** `!vaga Gank / Tank:1 / DPS:3`"
-        )
+        mensagem_erro = "⚠️ **Formato incorreto!** Exemplo: `!vaga Gank / Tank:1 / DPS:3`"
         return await ctx.send(mensagem_erro, delete_after=20)
 
-    # PROCESSAMENTO DO TEMPO (Fuso UTC-4)
     unix_timestamp = None
     if horario_evento:
         try:
@@ -580,15 +459,12 @@ async def vaga(ctx, *, texto: str = None):
             fuso = timezone(timedelta(hours=-4))
             agora = datetime.now(fuso)
             data_evento = agora.replace(hour=int(h_str), minute=int(m_str), second=0, microsecond=0)
-            
             if data_evento < agora:
                 data_evento += timedelta(days=1)
-                
             unix_timestamp = int(data_evento.timestamp())
-        except Exception as e:
-            print(f"Erro ao calcular tempo: {e}")
+        except:
+            pass
 
-    # Inicia o painel enviando o horário
     painel = PainelVagas(conteudo, definicao_vagas, ctx.author.id, unix_timestamp)
     embed_inicial = painel.gerar_embed()
     
@@ -600,7 +476,5 @@ async def vaga(ctx, *, texto: str = None):
 # ==========================================
 #  INICIALIZAÇÃO
 # ==========================================
-
-keep_alive() # Liga o servidor fantasma
-
-bot.run(os.getenv('TOKEN_DO_BOT')) # Lê a senha do cofre de forma segura
+keep_alive() 
+bot.run(os.getenv('TOKEN_DO_BOT'))
