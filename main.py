@@ -122,7 +122,7 @@ async def auditoria_guilda():
         if membro.bot:
             continue
 
-        nomes_imunes = ["lider", "DIE HARD", "recrutador", "moderador", "caller", "SUB-LIDER"]
+        nomes_imunes = ["lider",  "moderador",  "SUB-LIDER"]
         ids_imunes = [CARGOS.get(nome) for nome in nomes_imunes if CARGOS.get(nome)]
 
         if any(c.id in ids_imunes for c in membro.roles):
@@ -414,7 +414,7 @@ async def registrar(ctx, *, nick: str = None):
                 mensagem_final = ""
 
                 if guild_id_jogador == GUILDA_ALBION_ID:
-                    cargo_dar = ctx.guild.get_role(CARGOS["membro"])
+                    cargo_dar = ctx.guild.get_role(CARGOS["DIE HARD"])
                     nova_tag = f"{TAG_GUILDA} {nome_correto}"
                     mensagem_final = f"✅ **Sucesso!** Bem-vindo à guilda, {ctx.author.mention}!"
                 elif ALIANCA_ALBION_ID and alliance_id_jogador == ALIANCA_ALBION_ID:
