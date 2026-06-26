@@ -1,3 +1,5 @@
 discord.py
 aiohttp
 Flask
+motor
+openpyxl
