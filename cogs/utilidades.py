@@ -1,13 +1,21 @@
 import discord
 from discord.ext import commands
 import aiohttp
+import asyncio
 
-# Importa as configurações do seu arquivo principal
 from config import GUILDA_ALBION_ID, ALIANCA_ALBION_ID, TAG_GUILDA, TAG_ALIANCA, CARGOS, CARGOS_PERMITIDOS_ADICIONAR
 
 class Utilidades(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        # Cria UMA ÚNICA sessão para o bot inteiro usar (Muito mais rápido)
+        self.session = aiohttp.ClientSession()
+        # Semáforo: Permite no máximo 5 pesquisas no Albion ao mesmo tempo (evita crash)
+        self.semaforo = asyncio.Semaphore(5)
+
+    # Quando a Cog for desligada/recarregada, ele fecha a sessão com segurança
+    async def cog_unload(self):
+        await self.session.close()
 
     @commands.command(name="ajuda", aliases=["help", "comandos"])
     async def ajuda(self, ctx):
@@ -68,83 +76,89 @@ class Utilidades(commands.Cog):
     async def ping(self, ctx):
         await ctx.send("Pong! Todos os sistemas operacionais.")
 
-
-    @commands.command(name="painel_registro")
-    @commands.has_permissions(administrator=True) 
-    async def painel_registro(self, ctx):
-        await ctx.message.delete()
-        embed = discord.Embed(
-            title="🛡️ PORTAL DE REGISTRO 🛡️",
-            description=(
-                "Bem-vindo ao nosso servidor!\n\n"
-                "Para ter acesso aos canais de voz e texto, você precisa confirmar sua conta do **Albion Online**.\n\n"
-                "👉 **Para se registrar, digite aqui no chat o comando:**\n"
-                "`!registrar SeuNickDoJogo`\n\n"
-                "*Exemplo: `!registrar Zezinho`*"
-            ),
-            color=discord.Color.blue()
-        )
-        embed.set_thumbnail(url=ctx.guild.icon.url if ctx.guild.icon else None)
-        await ctx.send(embed=embed)
-
-
     @commands.command(name="registrar")
+    @commands.cooldown(1, 30, commands.BucketType.user)  # 1 uso a cada 30s por usuário
     async def registrar(self, ctx, *, nick: str = None):
         await ctx.message.delete()
+
         if not nick:
-            return await ctx.send(f"⚠️ {ctx.author.mention}, use `!registrar SeuNick`.", delete_after=10)
-            
+            return await ctx.send(
+                f"⚠️ {ctx.author.mention}, use `!registrar SeuNick`.",
+                delete_after=10
+            )
+
         msg_aviso = await ctx.send(f"🔍 Buscando **{nick}** nos servidores do Albion, aguarde um momento...")
-        
+
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"https://gameinfo.albiononline.com/api/gameinfo/search?q={nick}") as resp:
+            nick_lower = nick.lower()
+
+            async with self.semaforo:  # Controla chamadas simultâneas
+                timeout = aiohttp.ClientTimeout(total=10)  # Timeout de 10s
+                async with self.session.get(
+                    f"https://gameinfo.albiononline.com/api/gameinfo/search?q={nick}",
+                    timeout=timeout
+                ) as resp:
                     if resp.status != 200:
-                        return await msg_aviso.edit(content="❌ Erro ao conectar com o Albion. Tente novamente.")
-                    
+                        return await msg_aviso.edit(
+                            content="❌ Erro ao conectar com o Albion. Tente novamente."
+                        )
                     dados = await resp.json()
-                    jogadores = dados.get('players', [])
-                    jogador_encontrado = next((p for p in jogadores if p['Name'].lower() == nick.lower()), None)
-                            
-                    if not jogador_encontrado:
-                        return await msg_aviso.edit(content=f"❌ O jogador **{nick}** não foi encontrado!")
 
-                    guild_id_jogador = jogador_encontrado.get('GuildId')
-                    alliance_id_jogador = jogador_encontrado.get('AllianceId')
-                    nome_correto = jogador_encontrado['Name']
+            jogadores = dados.get('players', [])
+            jogador_encontrado = next(
+                (p for p in jogadores if p['Name'].lower() == nick_lower), None
+            )
 
-                    cargo_dar = None
-                    nova_tag = ""
-                    mensagem_final = ""
+            if not jogador_encontrado:
+                return await msg_aviso.edit(content=f"❌ O jogador **{nick}** não foi encontrado!")
 
-                    if guild_id_jogador == GUILDA_ALBION_ID:
-                        cargo_dar = ctx.guild.get_role(CARGOS["DIE HARD"])
-                        nova_tag = f"{TAG_GUILDA} {nome_correto}"
-                        mensagem_final = f"✅ **Sucesso!** Bem-vindo à guilda, {ctx.author.mention}!"
-                    elif ALIANCA_ALBION_ID and alliance_id_jogador == ALIANCA_ALBION_ID:
-                        cargo_dar = ctx.guild.get_role(CARGOS["aliado"])
-                        nova_tag = f"{TAG_ALIANCA} {nome_correto}"
-                        mensagem_final = f"🤝 **Sucesso!** Aliado reconhecido, {ctx.author.mention}!"
-                    else:
-                        return await msg_aviso.edit(content=f"❌ Acesso Negado: Você não pertence à Guilda/Aliança.")
+            guild_id_jogador = jogador_encontrado.get('GuildId')
+            alliance_id_jogador = jogador_encontrado.get('AllianceId')
+            nome_correto = jogador_encontrado['Name']
 
-                    if cargo_dar:
-                        try:
-                            await ctx.author.add_roles(cargo_dar)
-                        except discord.Forbidden:
-                            print(f"❌ O bot não tem permissão para dar o cargo '{cargo_dar.name}'.")
-                            mensagem_final += f"\n\n⚠️ **Atenção:** Seu registro funcionou, mas eu não tenho permissão para te dar o cargo **{cargo_dar.name}**. Peça para a liderança subir o meu cargo nas configurações do servidor!"
-                            
-                    try:
-                        await ctx.author.edit(nick=nova_tag[:32])
-                    except discord.Forbidden:
-                        mensagem_final += "\n⚠️ **Atenção:** Não consegui alterar seu Nick. Provavelmente seu cargo no servidor é maior que o meu (Dono/Admin)."
+            cargo_dar = None
+            nova_tag = ""
+            mensagem_final = ""
 
-                    await msg_aviso.edit(content=mensagem_final)
+            if guild_id_jogador == GUILDA_ALBION_ID:
+                cargo_dar = ctx.guild.get_role(CARGOS["DIE HARD"])
+                nova_tag = f"{TAG_GUILDA} {nome_correto}"
+                mensagem_final = f"✅ **Sucesso!** Bem-vindo à guilda, {ctx.author.mention}!"
+            elif ALIANCA_ALBION_ID and alliance_id_jogador == ALIANCA_ALBION_ID:
+                cargo_dar = ctx.guild.get_role(CARGOS["aliado"])
+                nova_tag = f"{TAG_ALIANCA} {nome_correto}"
+                mensagem_final = f"🤝 **Sucesso!** Aliado reconhecido, {ctx.author.mention}!"
+            else:
+                return await msg_aviso.edit(
+                    content="❌ Acesso Negado: Você não pertence à Guilda/Aliança."
+                )
 
+            # Aplica cargo e nick em paralelo
+            tarefas = []
+            if cargo_dar:
+                tarefas.append(ctx.author.add_roles(cargo_dar))
+            tarefas.append(ctx.author.edit(nick=nova_tag[:32]))
+
+            resultados = await asyncio.gather(*tarefas, return_exceptions=True)
+
+            for resultado in resultados:
+                if isinstance(resultado, discord.Forbidden):
+                    mensagem_final += "\n⚠️ Sem permissão para aplicar cargo/nick. Avise a liderança."
+
+            await msg_aviso.edit(content=mensagem_final)
+
+        except asyncio.TimeoutError:
+            await msg_aviso.edit(content="⏱️ A API do Albion demorou demais. Tente novamente.")
         except Exception as e:
             await msg_aviso.edit(content=f"⚠️ Ocorreu um erro interno: {e}")
 
+    @registrar.error
+    async def registrar_error(self, ctx, error):
+        if isinstance(error, commands.CommandOnCooldown):
+            await ctx.send(
+                f"⏳ {ctx.author.mention}, aguarde **{error.retry_after:.0f}s** antes de tentar de novo.",
+                delete_after=10
+            )
 
 # Função obrigatória para inicializar a Cog
 async def setup(bot):
