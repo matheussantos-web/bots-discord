@@ -107,16 +107,69 @@ class RegistrarCog(commands.Cog):
         )
 
     # ——— COMANDO !registrar @membro NICK ———
+# ——— COMANDO !registrar NICK ou !registrar @membro NICK ———
     @commands.command()
-    async def registrar(self, ctx, membro: discord.Member = None, *, nick: str = None):
-        """Uso: !registrar @membro NICK_NO_ALBION"""
-        if not membro or not nick:
-            return await ctx.send('❌ Uso: `!registrar @membro NICK_NO_ALBION`', delete_after=5)
+    async def registrar(self, ctx, alvo: discord.Member = None, *, nick: str = None):
+        """Uso: !registrar Zezinho OU !registrar @membro Zezinho"""
+        
+        # Se a pessoa não marcou ninguém, o alvo é ela mesma e a primeira palavra é o nick
+        if nick is None and alvo is None:
+             return await ctx.send('❌ Uso correto: `!registrar SeuNick` ou `!registrar @membro Nick`', delete_after=10)
+             
+        if nick is None and isinstance(alvo, discord.Member) == False:
+             pass 
+
+        # Lógica para permitir !registrar Zezinho (onde alvo vira o próprio autor da msg)
+        membro_final = ctx.author
+        nick_final = ""
+
+        partes = ctx.message.content.split()
+        if len(partes) >= 2:
+            if ctx.message.mentions:
+                membro_final = ctx.message.mentions[0]
+                nick_final = " ".join(partes[2:])
+            else:
+                nick_final = " ".join(partes[1:])
+        
+        if not nick_final:
+             return await ctx.send('❌ Você esqueceu de informar o Nick!', delete_after=5)
 
         posicao = self.fila.qsize() + 1
-        msg_status = await ctx.send(f'🔍 Buscando **{nick}** na API do Albion... (posição na fila: {posicao})')
+        msg_status = await ctx.send(f'🔍 Buscando **{nick_final}** na API do Albion... (posição na fila: {posicao})')
 
-        await self.fila.put((membro, nick, msg_status, ctx.guild))
+        await self.fila.put((membro_final, nick_final, msg_status, ctx.guild))
+
+        # ——— COMANDO !registrar NICK ou !registrar @membro NICK ———
+    @commands.command()
+    async def registrar(self, ctx, alvo: discord.Member = None, *, nick: str = None):
+        """Uso: !registrar Zezinho OU !registrar @membro Zezinho"""
+        
+        # Se a pessoa não marcou ninguém, o alvo é ela mesma e a primeira palavra é o nick
+        if nick is None and alvo is None:
+             return await ctx.send('❌ Uso correto: `!registrar SeuNick` ou `!registrar @membro Nick`', delete_after=10)
+             
+        if nick is None and isinstance(alvo, discord.Member) == False:
+             pass 
+
+        # Lógica para permitir !registrar Zezinho (onde alvo vira o próprio autor da msg)
+        membro_final = ctx.author
+        nick_final = ""
+
+        partes = ctx.message.content.split()
+        if len(partes) >= 2:
+            if ctx.message.mentions:
+                membro_final = ctx.message.mentions[0]
+                nick_final = " ".join(partes[2:])
+            else:
+                nick_final = " ".join(partes[1:])
+        
+        if not nick_final:
+             return await ctx.send('❌ Você esqueceu de informar o Nick!', delete_after=5)
+
+        posicao = self.fila.qsize() + 1
+        msg_status = await ctx.send(f'🔍 Buscando **{nick_final}** na API do Albion... (posição na fila: {posicao})')
+
+        await self.fila.put((membro_final, nick_final, msg_status, ctx.guild)) 
 
 
 async def setup(bot):
