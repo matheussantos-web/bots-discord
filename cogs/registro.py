@@ -1,0 +1,123 @@
+import discord
+from discord.ext import commands
+import aiohttp
+import asyncio
+from config import GUILD_ID, GUILD_NOME_ALBION, ALIANCA_ID, ALIANCA_NOME, CARGO_DIEHARD, CARGO_ALIADO
+
+API_BUSCA = 'https://gameinfo.albiononline.com/api/gameinfo/search?q={}'
+
+
+class RegistrarCog(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.fila = asyncio.Queue()
+        self.worker_task = None
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        if not self.worker_task:
+            self.worker_task = self.bot.loop.create_task(self.processar_fila())
+
+    def cog_unload(self):
+        if self.worker_task:
+            self.worker_task.cancel()
+
+    # ——— WORKER QUE PROCESSA UM POR VEZ (evita B.O na API) ———
+    async def processar_fila(self):
+        await self.bot.wait_until_ready()
+        while not self.bot.is_closed():
+            item = await self.fila.get()
+            membro, nick, msg_status, guild = item
+
+            try:
+                await self.buscar_e_registrar(membro, nick, msg_status, guild)
+            except Exception as e:
+                print(f'❌ Erro ao registrar {nick}: {e}')
+                try:
+                    await msg_status.edit(content=f'❌ Erro ao consultar a API pra **{nick}**. Tenta novamente.')
+                except:
+                    pass
+
+            await asyncio.sleep(2)  # intervalo entre requests
+            self.fila.task_done()
+
+    # ——— BUSCA NA API E REGISTRA ———
+    async def buscar_e_registrar(self, membro: discord.Member, nick: str, msg_status, guild: discord.Guild):
+        async with aiohttp.ClientSession() as session:
+            url = API_BUSCA.format(nick)
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status != 200:
+                    return await msg_status.edit(content=f'❌ API retornou erro ({resp.status}) pra **{nick}**.')
+                dados = await resp.json()
+
+        jogadores = dados.get('players', [])
+
+        # Confirma se o nick é exatamente o mesmo (case insensitive)
+        jogador = next((p for p in jogadores if p.get('Name', '').lower() == nick.lower()), None)
+
+        if not jogador:
+            return await msg_status.edit(content=f'❌ Personagem **{nick}** não encontrado no Albion Online.')
+
+        nome_real      = jogador.get('Name')
+        guild_id       = jogador.get('GuildId')
+        guild_name     = jogador.get('GuildName')
+        alliance_id    = jogador.get('AllianceId')
+        alliance_name  = jogador.get('AllianceName')
+
+        # ——— É DA DIE HARD ———
+        if guild_id == GUILD_ID and guild_name == GUILD_NOME_ALBION:
+            cargo = discord.utils.get(guild.roles, name=CARGO_DIEHARD)
+            novo_nick = f'[DH] {nome_real}'
+
+            try:
+                await membro.edit(nick=novo_nick)
+                if cargo:
+                    await membro.add_roles(cargo)
+                await msg_status.edit(
+                    content=f'✅ **{nome_real}** registrado como membro da **Die Hard**!\n'
+                            f'👤 Apelido alterado para `{novo_nick}`\n'
+                            f'🛡️ Cargo **{CARGO_DIEHARD}** atribuído a {membro.mention}.'
+                )
+            except discord.Forbidden:
+                await msg_status.edit(content=f'❌ Sem permissão pra alterar apelido/cargo de {membro.mention}. Verifica se meu cargo está acima do dele.')
+            return
+
+        # ——— É DA ALIANÇA (mas não da Die Hard) ———
+        if alliance_id == ALIANCA_ID and alliance_name == ALIANCA_NOME:
+            cargo = discord.utils.get(guild.roles, name=CARGO_ALIADO)
+            novo_nick = f'[ALLY] {nome_real}'
+
+            try:
+                await membro.edit(nick=novo_nick)
+                if cargo:
+                    await membro.add_roles(cargo)
+                await msg_status.edit(
+                    content=f'✅ **{nome_real}** registrado como **Aliado** (guilda: {guild_name})!\n'
+                            f'👤 Apelido alterado para `{novo_nick}`\n'
+                            f'🤝 Cargo **{CARGO_ALIADO}** atribuído a {membro.mention}.'
+                )
+            except discord.Forbidden:
+                await msg_status.edit(content=f'❌ Sem permissão pra alterar apelido/cargo de {membro.mention}.')
+            return
+
+        # ——— NÃO É NEM DIE HARD NEM ALIANÇA ———
+        await msg_status.edit(
+            content=f'⚠️ **{nome_real}** não pertence à Die Hard nem à aliança {ALIANCA_NOME}.\n'
+                    f'Guilda atual: **{guild_name or "Sem guilda"}**'
+        )
+
+    # ——— COMANDO !registrar @membro NICK ———
+    @commands.command()
+    async def registrar(self, ctx, membro: discord.Member = None, *, nick: str = None):
+        """Uso: !registrar @membro NICK_NO_ALBION"""
+        if not membro or not nick:
+            return await ctx.send('❌ Uso: `!registrar @membro NICK_NO_ALBION`', delete_after=5)
+
+        posicao = self.fila.qsize() + 1
+        msg_status = await ctx.send(f'🔍 Buscando **{nick}** na API do Albion... (posição na fila: {posicao})')
+
+        await self.fila.put((membro, nick, msg_status, ctx.guild))
+
+
+async def setup(bot):
+    await bot.add_cog(RegistrarCog(bot))
