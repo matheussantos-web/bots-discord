@@ -2,10 +2,11 @@ import discord
 from discord.ext import commands
 import aiohttp
 import asyncio
-from config import GUILD_ID, GUILD_NOME_ALBION, ALIANCA_ID, ALIANCA_NOME, CARGO_DIEHARD, CARGO_ALIADO
+
+# Importa as variáveis EXATAMENTE como estão no seu config.py
+from config import GUILDA_ALBION_ID, ALIANCA_ALBION_ID, CARGOS
 
 API_BUSCA = 'https://gameinfo.albiononline.com/api/gameinfo/search?q={}'
-
 
 class RegistrarCog(commands.Cog):
     def __init__(self, bot):
@@ -62,39 +63,38 @@ class RegistrarCog(commands.Cog):
         guild_id       = jogador.get('GuildId')
         guild_name     = jogador.get('GuildName')
         alliance_id    = jogador.get('AllianceId')
-        alliance_name  = jogador.get('AllianceName')
 
         # ——— É DA DIE HARD ———
-        if guild_id == GUILD_ID and guild_name == GUILD_NOME_ALBION:
-            cargo = discord.utils.get(guild.roles, name=CARGO_DIEHARD)
+        if guild_id == GUILDA_ALBION_ID:
+            cargo = guild.get_role(CARGOS.get("DIE HARD"))
             novo_nick = f'[DH] {nome_real}'
 
             try:
-                await membro.edit(nick=novo_nick)
+                await membro.edit(nick=novo_nick[:32])
                 if cargo:
                     await membro.add_roles(cargo)
                 await msg_status.edit(
                     content=f'✅ **{nome_real}** registrado como membro da **Die Hard**!\n'
                             f'👤 Apelido alterado para `{novo_nick}`\n'
-                            f'🛡️ Cargo **{CARGO_DIEHARD}** atribuído a {membro.mention}.'
+                            f'🛡️ Cargo <@&{cargo.id}> atribuído a {membro.mention}.'
                 )
             except discord.Forbidden:
                 await msg_status.edit(content=f'❌ Sem permissão pra alterar apelido/cargo de {membro.mention}. Verifica se meu cargo está acima do dele.')
             return
 
         # ——— É DA ALIANÇA (mas não da Die Hard) ———
-        if alliance_id == ALIANCA_ID and alliance_name == ALIANCA_NOME:
-            cargo = discord.utils.get(guild.roles, name=CARGO_ALIADO)
+        if ALIANCA_ALBION_ID and alliance_id == ALIANCA_ALBION_ID:
+            cargo = guild.get_role(CARGOS.get("aliado"))
             novo_nick = f'[ALLY] {nome_real}'
 
             try:
-                await membro.edit(nick=novo_nick)
+                await membro.edit(nick=novo_nick[:32])
                 if cargo:
                     await membro.add_roles(cargo)
                 await msg_status.edit(
                     content=f'✅ **{nome_real}** registrado como **Aliado** (guilda: {guild_name})!\n'
                             f'👤 Apelido alterado para `{novo_nick}`\n'
-                            f'🤝 Cargo **{CARGO_ALIADO}** atribuído a {membro.mention}.'
+                            f'🤝 Cargo <@&{cargo.id}> atribuído a {membro.mention}.'
                 )
             except discord.Forbidden:
                 await msg_status.edit(content=f'❌ Sem permissão pra alterar apelido/cargo de {membro.mention}.')
@@ -102,12 +102,11 @@ class RegistrarCog(commands.Cog):
 
         # ——— NÃO É NEM DIE HARD NEM ALIANÇA ———
         await msg_status.edit(
-            content=f'⚠️ **{nome_real}** não pertence à Die Hard nem à aliança {ALIANCA_NOME}.\n'
+            content=f'⚠️ **{nome_real}** não pertence à guilda principal nem à aliança.\n'
                     f'Guilda atual: **{guild_name or "Sem guilda"}**'
         )
 
-    # ——— COMANDO !registrar @membro NICK ———
-# ——— COMANDO !registrar NICK ou !registrar @membro NICK ———
+    # ——— COMANDO !registrar NICK ou !registrar @membro NICK ———
     @commands.command()
     async def registrar(self, ctx, alvo: discord.Member = None, *, nick: str = None):
         """Uso: !registrar Zezinho OU !registrar @membro Zezinho"""
@@ -138,39 +137,6 @@ class RegistrarCog(commands.Cog):
         msg_status = await ctx.send(f'🔍 Buscando **{nick_final}** na API do Albion... (posição na fila: {posicao})')
 
         await self.fila.put((membro_final, nick_final, msg_status, ctx.guild))
-
-        # ——— COMANDO !registrar NICK ou !registrar @membro NICK ———
-    @commands.command()
-    async def registrar(self, ctx, alvo: discord.Member = None, *, nick: str = None):
-        """Uso: !registrar Zezinho OU !registrar @membro Zezinho"""
-        
-        # Se a pessoa não marcou ninguém, o alvo é ela mesma e a primeira palavra é o nick
-        if nick is None and alvo is None:
-             return await ctx.send('❌ Uso correto: `!registrar SeuNick` ou `!registrar @membro Nick`', delete_after=10)
-             
-        if nick is None and isinstance(alvo, discord.Member) == False:
-             pass 
-
-        # Lógica para permitir !registrar Zezinho (onde alvo vira o próprio autor da msg)
-        membro_final = ctx.author
-        nick_final = ""
-
-        partes = ctx.message.content.split()
-        if len(partes) >= 2:
-            if ctx.message.mentions:
-                membro_final = ctx.message.mentions[0]
-                nick_final = " ".join(partes[2:])
-            else:
-                nick_final = " ".join(partes[1:])
-        
-        if not nick_final:
-             return await ctx.send('❌ Você esqueceu de informar o Nick!', delete_after=5)
-
-        posicao = self.fila.qsize() + 1
-        msg_status = await ctx.send(f'🔍 Buscando **{nick_final}** na API do Albion... (posição na fila: {posicao})')
-
-        await self.fila.put((membro_final, nick_final, msg_status, ctx.guild)) 
-
 
 async def setup(bot):
     await bot.add_cog(RegistrarCog(bot))
