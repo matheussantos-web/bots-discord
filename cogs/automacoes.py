@@ -4,7 +4,6 @@ import aiohttp
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-# Importa as configurações do seu arquivo principal
 from config import (
     CANAL_LIMPEZA_ID, CARGOS, GUILDA_ALBION_ID, ALIANCA_ALBION_ID,
     MONGO_URI, colecao_pontos, MINIMO_PESSOAS_CALL, PONTOS_POR_CICLO,
@@ -14,18 +13,14 @@ from config import (
 class Automacoes(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.calls_temporarias = set()  # rastreia por ID, não por nome
 
-    # ==========================================
-    # LIGANDO OS MOTORES (ON_READY)
-    # ==========================================
     @commands.Cog.listener()
     async def on_ready(self):
         if not self.auditoria_guilda.is_running():
             self.auditoria_guilda.start()
-            
         if not self.limpeza_automatica.is_running():
             self.limpeza_automatica.start()
-
         if not self.farm_de_pontos.is_running():
             self.farm_de_pontos.start()
 
@@ -35,7 +30,7 @@ class Automacoes(commands.Cog):
     @tasks.loop(minutes=30)
     async def limpeza_automatica(self):
         if CANAL_LIMPEZA_ID == 0:
-            return 
+            return
 
         canal = self.bot.get_channel(CANAL_LIMPEZA_ID)
         if not canal:
@@ -44,7 +39,7 @@ class Automacoes(commands.Cog):
         limite_tempo = datetime.now(timezone.utc) - timedelta(hours=6)
 
         def verificar_mensagem(msg):
-            return not msg.pinned 
+            return not msg.pinned
 
         try:
             deletadas = await canal.purge(limit=None, before=limite_tempo, check=verificar_mensagem)
@@ -59,12 +54,12 @@ class Automacoes(commands.Cog):
     @tasks.loop(hours=24)
     async def auditoria_guilda(self):
         print("🔍 Iniciando ronda de auditoria diária na API do Albion...")
-        
+
         if not self.bot.guilds:
             return
-            
-        guilda_discord = self.bot.guilds[0] 
-        
+
+        guilda_discord = self.bot.guilds[0]
+
         cargos_gerenciados = []
         for id_cargo in CARGOS.values():
             cargo = guilda_discord.get_role(id_cargo)
@@ -88,15 +83,15 @@ class Automacoes(commands.Cog):
 
             nick = membro.display_name
             if " " in nick:
-                nick = nick.split(" ", 1)[1] 
+                nick = nick.split(" ", 1)[1]
 
             async with aiohttp.ClientSession() as session:
                 try:
                     async with session.get(f"https://gameinfo.albiononline.com/api/gameinfo/search?q={nick}") as resp:
                         if resp.status != 200:
-                            await asyncio.sleep(2) 
+                            await asyncio.sleep(2)
                             continue
-                        
+
                         dados = await resp.json()
                         jogadores = dados.get('players', [])
                         jogador_encontrado = next((p for p in jogadores if p['Name'].lower() == nick.lower()), None)
@@ -118,17 +113,17 @@ class Automacoes(commands.Cog):
                         if rebaixar:
                             await membro.remove_roles(*cargos_do_membro)
                             print(f"⚠️ {membro.display_name} foi rebaixado.")
-                            
+
                             try:
                                 await membro.send("⚠️ **Aviso Automático:** Seus cargos no Discord da guilda foram removidos porque nosso sistema detectou que você não está mais na guilda/aliança no jogo. Se isso for um erro, use o comando `!registrar` novamente!")
                             except discord.Forbidden:
-                                pass 
+                                pass
 
                 except Exception as e:
                     print(f"Erro na auditoria do jogador {nick}: {e}")
 
             await asyncio.sleep(2)
-            
+
         print("✅ Base concluída.")
 
     # ==========================================
@@ -149,7 +144,7 @@ class Automacoes(commands.Cog):
                     for membro in membros_na_call:
                         id_str = str(membro.id)
                         eh_caller = any(c.id in cargos_bonus for c in membro.roles)
-                        
+
                         pontos_ganhos = (PONTOS_POR_CICLO * MULTIPLICADOR_CALLER) if eh_caller else PONTOS_POR_CICLO
 
                         await colecao_pontos.update_one(
@@ -165,7 +160,7 @@ class Automacoes(commands.Cog):
     async def on_raw_reaction_add(self, payload):
         if payload.message_id != MENSAGEM_CLASSES_ID:
             return
-        
+
         if payload.member.bot:
             return
 
@@ -186,11 +181,11 @@ class Automacoes(commands.Cog):
     async def on_raw_reaction_remove(self, payload):
         if payload.message_id != MENSAGEM_CLASSES_ID:
             return
-        
+
         guild = self.bot.get_guild(payload.guild_id)
         if not guild:
             return
-        
+
         membro = guild.get_member(payload.user_id)
         if not membro or membro.bot:
             return
@@ -205,72 +200,72 @@ class Automacoes(commands.Cog):
                     await membro.remove_roles(cargo)
                     print(f"🔴 {membro.display_name} removeu a classe de {cargo.name}.")
                 except discord.Forbidden:
-                    pass        
-            
+                    pass
+
     # ==========================================
     # CRIADOR DE CALLS DINÂMICAS
     # ==========================================
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
-            
-        # --- 🚨 RASTREADORES DE DEBUG (Vamos ver o que o bot enxerga) ---
+
         print(f"👀 ALERTA: O bot detectou movimentação de voz do membro {member.name}!")
-            
+
         if after.channel:
             print(f"➡️ Canal destino: {after.channel.name} | ID: {after.channel.id}")
             print(f"📋 IDs permitidos no config.py: {CANAIS_GERADORES_IDS}")
-                
+
             if after.channel.id in CANAIS_GERADORES_IDS:
                 print("✅ SUCESSO: O ID bateu com o gerador! Iniciando criação da call...")
             else:
                 print("❌ FALHA: O ID do canal não está na lista de geradores.")
-            
+
         # --- 1. ENTROU NUM GERADOR ---
         if after.channel and after.channel.id in CANAIS_GERADORES_IDS:
             guilda = member.guild
             categoria = after.channel.category
-                
-            # Bloqueia a visão geral, mas dá poder de GERENCIAR O CANAL para o criador
+
             permissoes = {
-            guilda.default_role: discord.PermissionOverwrite(view_channel=False), 
-                member: discord.PermissionOverwrite(view_channel=True, connect=True, manage_channels=True) 
+                guilda.default_role: discord.PermissionOverwrite(view_channel=False),
+                member: discord.PermissionOverwrite(view_channel=True, connect=True, manage_channels=True)
             }
-                
-            # Aplica permissão para todos os cargos registrados no seu config.py
+
             for nome, id_cargo in CARGOS.items():
                 cargo_obj = guilda.get_role(id_cargo)
-                if cargo_obj: 
+                if cargo_obj:
                     permissoes[cargo_obj] = discord.PermissionOverwrite(view_channel=True, connect=True)
-                
+
             try:
                 novo_canal = await guilda.create_voice_channel(
                     name=f"🎮 {member.display_name}",
                     category=categoria,
                     overwrites=permissoes
                 )
+
+                # Rastreia por ID — funciona mesmo se o membro renomear a call
+                self.calls_temporarias.add(novo_canal.id)
                 print("✅ Sala temporária criada no Discord!")
-                    
-                # 🔒 TRAVA DE SEGURANÇA 1: Verifica se o membro ainda está conectado em alguma call
+
                 if member.voice and member.voice.channel:
                     await member.move_to(novo_canal)
                     print(f"✅ {member.name} movido para a sala temporária!")
                 else:
-                    # Se ele saiu rápido demais, apaga a sala órfã
                     await novo_canal.delete()
-                        
+                    self.calls_temporarias.discard(novo_canal.id)
+
             except Exception as e:
                 print(f"⚠️ Erro na criação de call temporária: {e}")
 
         # --- 2. SAIU DE UMA CALL TEMPORÁRIA ---
-        if before.channel and before.channel.name.startswith("🎮") and before.channel.id not in CANAIS_GERADORES_IDS:
+        if before.channel and before.channel.id in self.calls_temporarias:
             if len(before.channel.members) == 0:
                 try:
                     await before.channel.delete()
+                    self.calls_temporarias.discard(before.channel.id)
                 except discord.NotFound:
-                    pass
+                    self.calls_temporarias.discard(before.channel.id)
                 except Exception as e:
                     print(f"⚠️ Erro ao apagar call temporária: {e}")
 
-# Função para plugar no main.py
+
 async def setup(bot):
     await bot.add_cog(Automacoes(bot))
