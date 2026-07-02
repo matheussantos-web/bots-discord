@@ -53,8 +53,15 @@ class RegistrarCog(commands.Cog):
 
         jogadores = dados.get('players', [])
 
-        # Confirma se o nick é exatamente o mesmo (case insensitive)
-        jogador = next((p for p in jogadores if p.get('Name', '').lower() == nick.lower()), None)
+        # Filtra todos com o nick exato
+        candidatos = [p for p in jogadores if p.get('Name', '').lower() == nick.lower()]
+ 
+        # Prioriza quem tem GuildId (evita pegar perfil errado quando há duplicatas)
+        jogador = next((p for p in candidatos if p.get('GuildId')), None)
+ 
+        # Se nenhum tiver guilda, pega o primeiro
+        if not jogador:
+            jogador = candidatos[0] if candidatos else None
 
         if not jogador:
             return await msg_status.edit(content=f'❌ Personagem **{nick}** não encontrado no Albion Online.')
