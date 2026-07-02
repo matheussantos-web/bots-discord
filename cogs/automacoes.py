@@ -210,34 +210,53 @@ class Automacoes(commands.Cog):
     # ==========================================
     # CRIADOR DE CALLS DINÂMICAS
     # ==========================================
-    @commands.Cog.listener()
-    async def on_voice_state_update(self, member, before, after):
-        # Entrou num gerador
+@commands.Cog.listener()
+async def on_voice_state_update(self, member, before, after):
+        
+        # --- 1. ENTROU NUM GERADOR ---
         if after.channel and after.channel.id in CANAIS_GERADORES_IDS:
             guilda = member.guild
             categoria = after.channel.category
             
+            # Bloqueia a visão geral, mas dá poder de GERENCIAR O CANAL para o criador
             permissoes = {
                 guilda.default_role: discord.PermissionOverwrite(view_channel=False), 
-                member: discord.PermissionOverwrite(view_channel=True, connect=True) 
+                member: discord.PermissionOverwrite(view_channel=True, connect=True, manage_channels=True) 
             }
             
+            # Aplica permissão para todos os cargos registrados no seu config.py
             for nome, id_cargo in CARGOS.items():
                 cargo_obj = guilda.get_role(id_cargo)
                 if cargo_obj: 
                     permissoes[cargo_obj] = discord.PermissionOverwrite(view_channel=True, connect=True)
             
-            novo_canal = await guilda.create_voice_channel(
-                name=f"🎮 {member.display_name}",
-                category=categoria,
-                overwrites=permissoes
-            )
-            await member.move_to(novo_canal)
+            try:
+                novo_canal = await guilda.create_voice_channel(
+                    name=f"🎮 {member.display_name}",
+                    category=categoria,
+                    overwrites=permissoes
+                )
+                
+                # 🔒 TRAVA DE SEGURANÇA 1: Verifica se o membro ainda está conectado em alguma call
+                if member.voice and member.voice.channel:
+                    await member.move_to(novo_canal)
+                else:
+                    # Se ele saiu rápido demais, apaga a sala órfã
+                    await novo_canal.delete()
+                    
+            except Exception as e:
+                print(f"⚠️ Erro na criação de call temporária: {e}")
 
-        # Saiu de uma call temporária
+        # --- 2. SAIU DE UMA CALL TEMPORÁRIA ---
         if before.channel and before.channel.name.startswith("🎮") and before.channel.id not in CANAIS_GERADORES_IDS:
             if len(before.channel.members) == 0:
-                await before.channel.delete()
+                try:
+                    await before.channel.delete()
+                except discord.NotFound:
+                    # 🔒 TRAVA DE SEGURANÇA 2: Ignora o erro se outro evento simultâneo já apagou o canal
+                    pass
+                except Exception as e:
+                    print(f"⚠️ Erro ao apagar call temporária: {e}")
 
 # Função para plugar no main.py
 async def setup(bot):
