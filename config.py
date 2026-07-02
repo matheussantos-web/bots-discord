@@ -2,6 +2,7 @@ import os
 from dotenv import load_dotenv
 import motor.motor_asyncio
 from datetime import timezone, timedelta
+import certifi
 
 # Carrega as senhas do arquivo .env
 load_dotenv()
@@ -9,7 +10,7 @@ load_dotenv()
 # IDs Principais
 GUILDA_ALBION_ID = "oZercpSURfeSz9_7Mpg1-w"  
 ALIANCA_ALBION_ID = "mCKNk3EyQ8qLeNMhozFIZg" 
-CANAIS_GERADORES_IDS = [1519180718406635570, 1486876393035010148] 
+CANAIS_GERADORES_IDS = [1519180718406635570, 1486876393035010148,1522055810480476371] 
 CANAL_LIMPEZA_ID = 1519195690503245835
 MENSAGEM_CLASSES_ID = 1519507112156463195  
 
@@ -50,7 +51,8 @@ CARGOS_PERMITIDOS_REMOVER = ["lider", "SUB-LIDER"]
 # Conexão MongoDB
 MONGO_URI = os.getenv('MONGO_URI')
 if MONGO_URI:
-    mongo_client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
+    # Cria UMA ÚNICA conexão com o passe de segurança do certifi
+    mongo_client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI, tlsCAFile=certifi.where())
     db = mongo_client["guilda_bot"]  
     colecao_pontos = db["pontos"]    
 else:
