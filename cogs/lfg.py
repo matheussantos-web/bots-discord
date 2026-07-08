@@ -240,7 +240,7 @@ class LFG(commands.Cog):
                 ),
                 inline=False
             )
-            return await ctx.send(embed=embed_ajuda, delete_after=60)
+            return await ctx.send(embed=embed_ajuda, delete_after=120)
         
         try:
             partes = texto.split('/')
