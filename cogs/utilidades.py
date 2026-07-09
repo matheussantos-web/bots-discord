@@ -40,9 +40,8 @@ class Utilidades(commands.Cog):
         embed.add_field(
             name="⚔️ Comandos de Formação (LFG)", 
             value=(
-                "`!vaga Conteúdo / Classe:Qtd / Hora:Minuto`\n"
+                "`/content`\n"
                 "➔ *Cria um painel interativo de PT.*\n"
-                "➔ *Exemplo:* `!vaga ZvZ / Tank:2 / Healer:2 / 20:30`"
             ), 
             inline=False
         )
@@ -55,6 +54,7 @@ class Utilidades(commands.Cog):
             embed.add_field(
                 name="⚙️ Comandos de Liderança (Restrito)", 
                 value=(
+                    "`!registrar @membro nicknojogo` ➔ Registra o membro no Discord.\n"
                     "`!adicionarpontos @membro 10` ➔ Adiciona pontos na conta de alguém.\n"
                     "`!removerpontos @membro 10` ➔ Remove pontos da conta de alguém.\n"
                     "`!relatorio` ➔ Extrai a planilha do Excel com todos os pontos.\n"

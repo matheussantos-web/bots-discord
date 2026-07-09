@@ -29,6 +29,7 @@ bot = MeuBot(command_prefix="!", intents=intents, help_command=None)
 
 @bot.event
 async def on_ready():
+    await bot.tree.sync()
     print(f'🔥 Sistema Mestre online! Operando como {bot.user}.')
 
 keep_alive() 

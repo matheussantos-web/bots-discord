@@ -17,7 +17,7 @@ MENSAGEM_CLASSES_ID = 1519507112156463195
 # Tags e Fuso
 TAG_GUILDA = "[DH]" 
 TAG_ALIANCA = "[ALLY]"
-FUSO_HORARIO = timezone(timedelta(hours=-4)) # UTC-4 (Manaus/Amazonas)
+FUSO_HORARIO = timezone(timedelta(hours=-3)) # UTC-4 (Manaus/Amazonas)
 
 # Dicionários de Cargos e Classes
 REACOES_CLASSES = {
