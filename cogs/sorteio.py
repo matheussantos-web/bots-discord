@@ -145,6 +145,16 @@ class Sorteio(commands.Cog):
         else:
             _salvar_json(ARQUIVO_INSCRITOS, {})
 
+    async def _resetar_tempo(self):
+        """Zera o tempo acumulado de todos os membros."""
+        if _usando_mongo():
+            await colecao_tempo_call.update_many(
+                {},
+                {"$set": {"minutos_acumulados": 0, "ultima_entrada": None}}
+            )
+        else:
+            _salvar_json(ARQUIVO_TEMPO, {})
+
     # ==================== PERMISSÃO ====================
 
     def _tem_permissao_sorteio(self, user):
@@ -254,8 +264,9 @@ class Sorteio(commands.Cog):
         config["premio_atual"] = premio
         await self._salvar_config(config)
 
-        # Limpar inscritos
+        # Limpar inscritos e resetar tempo
         await self._limpar_inscritos()
+        await self._resetar_tempo()
 
         # Anunciar vencedor
         nome_vencedor = vencedor.display_name if vencedor else inscritos.get(vencedor_id, {}).get("nome", f"ID: {vencedor_id}")
