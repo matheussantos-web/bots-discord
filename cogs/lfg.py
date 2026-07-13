@@ -1,5 +1,7 @@
 import discord
 import re
+import json
+import os
 from discord import app_commands
 from discord.ext import commands
 from datetime import datetime, timedelta, timezone
@@ -14,6 +16,57 @@ DIAS_SEMANA = {
     "sex": 4, "sab": 5, "dom": 6,
 }
 
+TEMPLATES_PATH = "data/templates.json"
+EVENTOS_PATH = "data/eventos.json"
+
+# ==========================================
+# PERSISTÊNCIA DE TEMPLATES
+# ==========================================
+
+def carregar_templates():
+    if os.path.exists(TEMPLATES_PATH):
+        try:
+            with open(TEMPLATES_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def salvar_templates(templates):
+    with open(TEMPLATES_PATH, "w", encoding="utf-8") as f:
+        json.dump(templates, f, ensure_ascii=False, indent=2)
+
+
+# ==========================================
+# PERSISTÊNCIA DA AGENDA (eventos_ativos)
+# ==========================================
+
+def carregar_eventos():
+    if os.path.exists(EVENTOS_PATH):
+        try:
+            with open(EVENTOS_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return []
+    return []
+
+
+def salvar_eventos(eventos):
+    with open(EVENTOS_PATH, "w", encoding="utf-8") as f:
+        json.dump(eventos, f, ensure_ascii=False, indent=2)
+
+
+def eventos_validos(eventos):
+    """Remove da lista os eventos expirados ou que já foram encerrados."""
+    agora_ts = int(datetime.now(FUSO).timestamp())
+    return [
+        e for e in eventos
+        if (e["unix_timestamp"] is None or e["unix_timestamp"] > agora_ts - 3600)
+        and not e.get("encerrado", False)  # Filtra para não listar os encerrados
+    ]
+
+
 # ==========================================
 # PARSER DE DATA/HORÁRIO FLEXÍVEL
 # ==========================================
@@ -23,7 +76,7 @@ def interpretar_horario(texto: str):
     Retorna o unix_timestamp de um texto de horário, ou None se não for reconhecido.
 
     Formatos aceitos:
-      "20:30"            -> hoje às 20:30 (ou amanhã se já passou)
+      "20:30"             -> hoje às 20:30 (ou amanhã se já passou)
       "hoje 20:30"        -> hoje às 20:30
       "amanha 20:30"      -> amanhã às 20:30
       "sex 20:30"         -> próxima sexta-feira às 20:30
@@ -176,7 +229,7 @@ class PainelVagas(discord.ui.View):
         botao_sair.callback = self.sair_callback
         self.add_item(botao_sair)
 
-        # NOVO: Botão de Encerrar Conteúdo (Call Out)
+        # Botão de Encerrar Conteúdo (Call Out)
         botao_encerrar = discord.ui.Button(label="Encerrar PT", style=discord.ButtonStyle.secondary, emoji="🛑")
         botao_encerrar.callback = self.encerrar_callback
         self.add_item(botao_encerrar)
@@ -184,7 +237,6 @@ class PainelVagas(discord.ui.View):
     def gerar_embed(self):
         titulo_destaque = f"💥 {self.conteudo.upper()} 💥"
 
-        # Altera o status visual se estiver encerrado
         if self.encerrado:
             status_texto = "🔴 Conteúdo Encerrado / Call Out"
             cor_embed = discord.Color.dark_gray()
@@ -222,7 +274,7 @@ class PainelVagas(discord.ui.View):
             embed.set_footer(text="Esta PT foi encerrada pelo líder e não aceita mais inscrições.")
         else:
             embed.set_footer(text="Clique nos botões abaixo para entrar ou sair da fila.")
-        
+
         return embed
 
     async def promover_da_fila(self, interaction: discord.Interaction, classe: str):
@@ -283,17 +335,23 @@ class PainelVagas(discord.ui.View):
         else:
             await interaction.response.send_message("Você não está inscrito em nenhuma vaga.", ephemeral=True)
 
-    # NOVO: Callback para encerrar a PT
     async def encerrar_callback(self, interaction: discord.Interaction):
-        # Permite apenas que o Criador da PT ou um Administrador encerre o conteúdo
         if interaction.user.id != self.autor_id and not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("❌ Acesso Negado: Apenas o líder da PT ou a Staff pode fazer o call out!", ephemeral=True)
 
         self.encerrer_painel()
+
+        # Atualiza o arquivo JSON para marcar o evento como encerrado
+        eventos_atuais = carregar_eventos()
+        for evento in eventos_atuais:
+            if evento.get("jump_url") == interaction.message.jump_url:
+                evento["encerrado"] = True
+                break
+        salvar_eventos(eventos_atuais)
+
         await interaction.response.edit_message(embed=self.gerar_embed(), view=self)
         await interaction.followup.send(f"🛑 **{interaction.user.display_name}** deu Call Out e encerrou o conteúdo: **{self.conteudo}**!")
 
-    # Desativa todos os botões da interface visualmente
     def encerrer_painel(self):
         self.encerrado = True
         for item in self.children:
@@ -301,7 +359,203 @@ class PainelVagas(discord.ui.View):
 
 
 # ==========================================
-# MODAL DE CRIAÇÃO (/content)
+# TEMPLATES — SELEÇÃO E CRIAÇÃO
+# ==========================================
+
+class ItemSelecionarTemplate(discord.ui.Select):
+    """Usado pelo /content: escolhe um template pra criar o painel, ou vai criar do zero."""
+    def __init__(self, cog: "LFG"):
+        self.cog = cog
+        opcoes = [discord.SelectOption(label="🆕 Criar do zero", value="__novo__", emoji="🆕")]
+        for nome in cog.templates.keys():
+            opcoes.append(discord.SelectOption(label=nome[:100], value=nome))
+        super().__init__(placeholder="Escolha um template ou crie do zero...", options=opcoes[:25])
+
+    async def callback(self, interaction: discord.Interaction):
+        escolha = self.values[0]
+        if escolha == "__novo__":
+            await interaction.response.send_modal(ModalCriarConteudo(self.cog))
+            return
+
+        template = self.cog.templates.get(escolha)
+        if not template:
+            return await interaction.response.send_message(
+                "❌ Esse template não existe mais (pode ter sido removido).", ephemeral=True
+            )
+
+        await interaction.response.send_modal(ModalUsarTemplate(self.cog, escolha, template))
+
+
+class ViewEscolherTemplate(discord.ui.View):
+    def __init__(self, cog: "LFG"):
+        super().__init__(timeout=60)
+        self.add_item(ItemSelecionarTemplate(cog))
+
+
+class ItemMenuTemplate(discord.ui.Select):
+    """Usado pelo /template: menu de gerenciamento (criar, listar, remover)."""
+    def __init__(self, cog: "LFG"):
+        self.cog = cog
+        opcoes = [
+            discord.SelectOption(label="➕ Criar novo template", value="__criar__", emoji="➕"),
+            discord.SelectOption(label="📋 Listar todos os templates", value="__listar__", emoji="📋"),
+        ]
+        for nome in cog.templates.keys():
+            opcoes.append(discord.SelectOption(label=f"⚙️ Gerenciar: {nome}"[:100], value=nome))
+        super().__init__(placeholder="O que você quer fazer?", options=opcoes[:25])
+
+    async def callback(self, interaction: discord.Interaction):
+        escolha = self.values[0]
+
+        if escolha == "__criar__":
+            return await interaction.response.send_modal(ModalCriarTemplate(self.cog))
+
+        if escolha == "__listar__":
+            embed = self.cog.montar_embed_templates()
+            return await interaction.response.edit_message(content=None, embed=embed, view=None)
+
+        template = self.cog.templates.get(escolha)
+        if not template:
+            return await interaction.response.edit_message(content="❌ Esse template não existe mais.", embed=None, view=None)
+
+        embed = discord.Embed(title=f"🛡️ {escolha}", color=discord.Color.blurple())
+        vagas_str = ", ".join(f"{c}:{q}" for c, q in template["vagas"].items())
+        embed.add_field(name="Vagas", value=vagas_str, inline=False)
+        if template.get("descricao"):
+            embed.add_field(name="Descrição", value=template["descricao"], inline=False)
+
+        await interaction.response.edit_message(content=None, embed=embed, view=ViewConfirmarRemocaoTemplate(self.cog, escolha))
+
+
+class ViewMenuTemplate(discord.ui.View):
+    def __init__(self, cog: "LFG"):
+        super().__init__(timeout=60)
+        self.add_item(ItemMenuTemplate(cog))
+
+
+class ViewConfirmarRemocaoTemplate(discord.ui.View):
+    def __init__(self, cog: "LFG", nome: str):
+        super().__init__(timeout=60)
+        self.cog = cog
+        self.nome = nome
+
+    @discord.ui.button(label="🗑️ Remover Template", style=discord.ButtonStyle.danger)
+    async def remover(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.nome in self.cog.templates:
+            del self.cog.templates[self.nome]
+            salvar_templates(self.cog.templates)
+            await interaction.response.edit_message(content=f"🗑️ Template **{self.nome}** removido.", embed=None, view=None)
+        else:
+            await interaction.response.edit_message(content="❌ Esse template já tinha sido removido.", embed=None, view=None)
+
+    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary)
+    async def cancelar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="Ação cancelada.", embed=None, view=None)
+
+
+class ModalUsarTemplate(discord.ui.Modal, title="🎮 Criar Conteúdo (Template)"):
+    def __init__(self, cog: "LFG", nome_template: str, template: dict):
+        super().__init__()
+        self.cog = cog
+        self.template = template
+
+        self.titulo = discord.ui.TextInput(
+            label="Título do Conteúdo",
+            style=discord.TextStyle.short,
+            default=nome_template[:100],
+            max_length=100,
+            required=True,
+            )
+        self.horario_texto = discord.ui.TextInput(
+            label="Horário (opcional)",
+            style=discord.TextStyle.short,
+            placeholder="20:30 | amanha 20:30 | sex 20:30",
+            required=False,
+        )
+        self.add_item(self.titulo)
+        self.add_item(self.horario_texto)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        conteudo = self.titulo.value.strip()
+        horario_input = self.horario_texto.value.strip()
+
+        if horario_input and not eh_texto_de_horario(horario_input):
+            return await interaction.response.send_message(
+                "❌ Horário em formato inválido. Use `20:30`, `amanha 20:30`, `sex 20:30` ou `25-12 20:30`.",
+                ephemeral=True
+            )
+
+        await self.cog.publicar_painel(
+            interaction,
+            conteudo,
+            dict(self.template["vagas"]),
+            self.template.get("descricao"),
+            horario_input,
+        )
+
+
+class ModalCriarTemplate(discord.ui.Modal, title="📋 Criar Template"):
+    nome_template = discord.ui.TextInput(
+        label="Nome do Template",
+        style=discord.TextStyle.short,
+        placeholder="Ex: Avalon Trio",
+        max_length=50,
+        required=True,
+    )
+    descricao_texto = discord.ui.TextInput(
+        label="Descrição (Opcional)",
+        style=discord.TextStyle.paragraph,
+        placeholder="Ex: requisito t8 ou equivalente, foco em pve.",
+        max_length=500,
+        required=False,
+    )
+    vagas_texto = discord.ui.TextInput(
+        label="Vagas (uma por linha: Classe:Qtd)",
+        style=discord.TextStyle.paragraph,
+        placeholder="Tank:1\nSuporte:2\nDPS:5",
+        required=True,
+    )
+
+    def __init__(self, cog: "LFG"):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        nome = self.nome_template.value.strip()
+        descricao = self.descricao_texto.value.strip() or None
+
+        definicao_vagas = {}
+        for linha in self.vagas_texto.value.splitlines():
+            linha_limpa = linha.strip().rstrip(',').strip()
+            if not linha_limpa:
+                continue
+            if ":" not in linha_limpa:
+                return await interaction.response.send_message(
+                    f"❌ Formato inválido em `{linha_limpa}`. Use `Classe:Qtd`, ex: `Tank:2`.",
+                    ephemeral=True
+                )
+            nome_classe, qtd = linha_limpa.split(":", 1)
+            qtd = qtd.strip()
+            if not qtd.isdigit():
+                return await interaction.response.send_message(
+                    f"❌ Quantidade inválida em `{linha_limpa}`. Use um número, ex: `Tank:2`.",
+                    ephemeral=True
+                )
+            definicao_vagas[nome_classe.strip()] = int(qtd)
+
+        if not definicao_vagas:
+            return await interaction.response.send_message(
+                "❌ Você precisa adicionar pelo menos uma vaga (ex: `Tank:2`).", ephemeral=True
+            )
+
+        self.cog.templates[nome] = {"vagas": definicao_vagas, "descricao": descricao}
+        salvar_templates(self.cog.templates)
+
+        await interaction.response.send_message(f"✅ Template **{nome}** salvo com sucesso! Já aparece no `/content`.", ephemeral=True)
+
+
+# ==========================================
+# MODAL DE CRIAÇÃO (/content — do zero)
 # ==========================================
 
 class ModalCriarConteudo(discord.ui.Modal, title="🎮 Criar Conteúdo"):
@@ -312,7 +566,6 @@ class ModalCriarConteudo(discord.ui.Modal, title="🎮 Criar Conteúdo"):
         max_length=100,
         required=True,
     )
-    # 🟢 Nova caixinha de texto (Opcional)
     descricao_texto = discord.ui.TextInput(
         label="Descrição do Conteúdo (Opcional)",
         style=discord.TextStyle.paragraph,
@@ -339,9 +592,8 @@ class ModalCriarConteudo(discord.ui.Modal, title="🎮 Criar Conteúdo"):
 
     async def on_submit(self, interaction: discord.Interaction):
         conteudo = self.titulo.value.strip()
-        descricao = self.descricao_texto.value.strip() or None  # 🟢 Pega o valor se existir
+        descricao = self.descricao_texto.value.strip() or None
 
-        # Parseia as vagas
         definicao_vagas = {}
         for linha in self.vagas_texto.value.splitlines():
             linha_limpa = linha.strip().rstrip(',').strip()
@@ -366,34 +618,14 @@ class ModalCriarConteudo(discord.ui.Modal, title="🎮 Criar Conteúdo"):
                 "❌ Você precisa adicionar pelo menos uma vaga (ex: `Tank:2`).", ephemeral=True
             )
 
-        # Parseia o horário
-        unix_timestamp = None
         horario_input = self.horario_texto.value.strip()
-        if horario_input:
-            if not eh_texto_de_horario(horario_input):
-                return await interaction.response.send_message(
-                    "❌ Horário em formato inválido. Use `20:30`, `amanha 20:30`, `sex 20:30` ou `25-12 20:30`.",
-                    ephemeral=True
-                )
-            unix_timestamp = interpretar_horario(horario_input)
+        if horario_input and not eh_texto_de_horario(horario_input):
+            return await interaction.response.send_message(
+                "❌ Horário em formato inválido. Use `20:30`, `amanha 20:30`, `sex 20:30` ou `25-12 20:30`.",
+                ephemeral=True
+            )
 
-        # 🟢 Passa a descrição para o PainelVagas
-        painel = PainelVagas(conteudo, definicao_vagas, interaction.user.id, unix_timestamp, descricao)
-        embed_inicial = painel.gerar_embed()
-
-        id_cargo_membro = CARGOS.get("DIE HARD")
-        mencao_cargo = f"<@&{id_cargo_membro}>" if id_cargo_membro else "@everyone"
-
-        await interaction.response.send_message(content=f"📢 {mencao_cargo}", embed=embed_inicial, view=painel)
-        mensagem_painel = await interaction.original_response()
-
-        # Registra no cache pro comando !agenda / /agenda
-        self.cog.eventos_ativos.append({
-            "conteudo": conteudo,
-            "autor_id": interaction.user.id,
-            "unix_timestamp": unix_timestamp,
-            "jump_url": mensagem_painel.jump_url,
-        })
+        await self.cog.publicar_painel(interaction, conteudo, definicao_vagas, descricao, horario_input)
 
 
 # ==========================================
@@ -403,22 +635,71 @@ class ModalCriarConteudo(discord.ui.Modal, title="🎮 Criar Conteúdo"):
 class LFG(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        # Registro em memória das PTs criadas, para o comando !agenda.
-        # OBS: zera quando o bot reinicia — persistência em disco é o próximo passo.
-        self.eventos_ativos = []
+        # Filtra os eventos ativos trazendo apenas os válidos e NÃO encerrados
+        self.eventos_ativos = eventos_validos(carregar_eventos())
+        salvar_eventos(self.eventos_ativos)
+        self.templates = carregar_templates()
+
+    def montar_embed_templates(self):
+        embed = discord.Embed(title="📋 Templates Salvos — Die Hard", color=discord.Color.blurple())
+        if not self.templates:
+            embed.description = "Nenhum template salvo ainda."
+            return embed
+        for nome, dados in self.templates.items():
+            vagas_str = ", ".join(f"{c}:{q}" for c, q in dados["vagas"].items())
+            valor = vagas_str
+            if dados.get("descricao"):
+                valor += f"\n*{dados['descricao']}*"
+            embed.add_field(name=f"🛡️ {nome}", value=valor, inline=False)
+        return embed
+
+    async def publicar_painel(self, interaction: discord.Interaction, conteudo, definicao_vagas, descricao, horario_input):
+        """Cria e posta o painel de vagas — usado tanto pelo fluxo 'do zero' quanto por template."""
+        unix_timestamp = interpretar_horario(horario_input) if horario_input else None
+
+        painel = PainelVagas(conteudo, definicao_vagas, interaction.user.id, unix_timestamp, descricao)
+        embed_inicial = painel.gerar_embed()
+
+        id_cargo_membro = CARGOS.get("DIE HARD")
+        mencao_cargo = f"<@&{id_cargo_membro}>" if id_cargo_membro else "@everyone"
+
+        await interaction.response.send_message(content=f"📢 {mencao_cargo}", embed=embed_inicial, view=painel)
+        mensagem_painel = await interaction.original_response()
+
+        self.eventos_ativos.append({
+            "conteudo": conteudo,
+            "autor_id": interaction.user.id,
+            "unix_timestamp": unix_timestamp,
+            "jump_url": mensagem_painel.jump_url,
+            "encerrado": False,  # Criado por padrão como ativo
+        })
+        salvar_eventos(self.eventos_ativos)
 
     @app_commands.command(name="content", description="Criar um painel de vagas para organizar conteúdo em grupo")
     async def content(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(ModalCriarConteudo(self))
+        if self.templates:
+            await interaction.response.send_message(
+                "Escolha um template salvo ou crie do zero:",
+                view=ViewEscolherTemplate(self),
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_modal(ModalCriarConteudo(self))
+
+    @app_commands.command(name="template", description="Gerenciar templates de conteúdo (criar, listar ou remover)")
+    async def template(self, interaction: discord.Interaction):
+        if not self.templates:
+            return await interaction.response.send_modal(ModalCriarTemplate(self))
+
+        await interaction.response.send_message(
+            "O que você quer fazer?", view=ViewMenuTemplate(self), ephemeral=True
+        )
 
     @commands.command(name="agenda")
     async def agenda(self, ctx):
-        agora_ts = int(datetime.now(FUSO).timestamp())
-
-        self.eventos_ativos = [
-            e for e in self.eventos_ativos
-            if e["unix_timestamp"] is None or e["unix_timestamp"] > agora_ts - 3600
-        ]
+        # Valida limpando expirados e encerrados antes de exibir
+        self.eventos_ativos = eventos_validos(carregar_eventos())
+        salvar_eventos(self.eventos_ativos)
 
         if not self.eventos_ativos:
             return await ctx.send("📭 Nenhum Ping agendada no momento. Crie um com `/content`.", delete_after=30)
