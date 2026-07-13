@@ -6,13 +6,18 @@ import random
 from datetime import datetime, timezone
 
 from config import (
-    CARGOS, CARGOS_PERMITIDOS_SORTEIO, MINUTO_MINIMO_CALL_PADRAO
+    MONGO_URI, colecao_sorteio_config, colecao_sorteio_inscritos,
+    colecao_tempo_call, CARGOS, CARGOS_PERMITIDOS_SORTEIO, MINUTO_MINIMO_CALL_PADRAO
 )
 
-# Arquivos JSON para persistência
+# Arquivos JSON para persistência local (fallback)
 ARQUIVO_CONFIG = "data/sorteio_config.json"
 ARQUIVO_INSCRITOS = "data/sorteio_inscritos.json"
 ARQUIVO_TEMPO = "data/tempo_call.json"
+
+def _usando_mongo():
+    """Verifica se o MongoDB está disponível."""
+    return bool(MONGO_URI)
 
 def _carregar_json(caminho, padrao=None):
     """Carrega um arquivo JSON. Retorna o conteúdo ou o padrão."""
@@ -26,6 +31,7 @@ def _carregar_json(caminho, padrao=None):
 
 def _salvar_json(caminho, dados):
     """Salva dados em um arquivo JSON."""
+    os.makedirs(os.path.dirname(caminho), exist_ok=True)
     with open(caminho, "w", encoding="utf-8") as f:
         json.dump(dados, f, indent=4, ensure_ascii=False, default=str)
 
@@ -33,30 +39,126 @@ class Sorteio(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    def _garantir_config(self):
-        """Garante que o arquivo de configuração existe."""
-        dados = _carregar_json(ARQUIVO_CONFIG)
-        if not dados:
-            dados = {
-                "ultimo_ganhador_id": None,
-                "premio_atual": "A definir",
-                "minuto_minimo": MINUTO_MINIMO_CALL_PADRAO
+    # ==================== HELPERS DE DADOS ====================
+
+    async def _garantir_config(self):
+        """Garante que existe uma config de sorteio. Retorna dict."""
+        if _usando_mongo():
+            doc = await colecao_sorteio_config.find_one({"_id": "global"})
+            if not doc:
+                doc = {
+                    "_id": "global",
+                    "ultimo_ganhador_id": None,
+                    "premio_atual": "A definir",
+                    "minuto_minimo": MINUTO_MINIMO_CALL_PADRAO
+                }
+                await colecao_sorteio_config.insert_one(doc)
+            return doc
+        else:
+            dados = _carregar_json(ARQUIVO_CONFIG)
+            if not dados:
+                dados = {
+                    "ultimo_ganhador_id": None,
+                    "premio_atual": "A definir",
+                    "minuto_minimo": MINUTO_MINIMO_CALL_PADRAO
+                }
+                _salvar_json(ARQUIVO_CONFIG, dados)
+            return dados
+
+    async def _salvar_config(self, config):
+        """Salva a config do sorteio."""
+        if _usando_mongo():
+            dados = {k: v for k, v in config.items() if k != "_id"}
+            await colecao_sorteio_config.update_one(
+                {"_id": "global"},
+                {"$set": dados},
+                upsert=True
+            )
+        else:
+            _salvar_json(ARQUIVO_CONFIG, config)
+
+    async def _buscar_tempo_user(self, user_id_str):
+        """Retorna (minutos_acumulados, ultima_entrada) do usuário."""
+        if _usando_mongo():
+            doc = await colecao_tempo_call.find_one({"_id": user_id_str})
+            if doc:
+                return doc.get("minutos_acumulados", 0), doc.get("ultima_entrada")
+            return 0, None
+        else:
+            dados = _carregar_json(ARQUIVO_TEMPO)
+            user = dados.get(user_id_str, {})
+            return user.get("minutos_acumulados", 0), user.get("ultima_entrada")
+
+    def _calcular_minutos(self, minutos_acumulados, ultima_entrada):
+        """Soma tempo parcial se estiver em call agora."""
+        if ultima_entrada:
+            try:
+                if isinstance(ultima_entrada, str):
+                    ultima_dt = datetime.fromisoformat(ultima_entrada)
+                else:
+                    ultima_dt = ultima_entrada
+                agora = datetime.now(timezone.utc)
+                minutos_parciais = int((agora - ultima_dt).total_seconds() / 60)
+                return minutos_acumulados + minutos_parciais
+            except (ValueError, TypeError):
+                pass
+        return minutos_acumulados
+
+    async def _ja_inscrito(self, user_id_str):
+        """Verifica se o usuário já está inscrito."""
+        if _usando_mongo():
+            doc = await colecao_sorteio_inscritos.find_one({"_id": user_id_str})
+            return doc is not None
+        else:
+            inscritos = _carregar_json(ARQUIVO_INSCRITOS)
+            return user_id_str in inscritos
+
+    async def _inscrever(self, user_id_str, nome):
+        """Inscreve o usuário no sorteio."""
+        if _usando_mongo():
+            await colecao_sorteio_inscritos.insert_one({
+                "_id": user_id_str,
+                "nome": nome,
+                "inscrito_em": datetime.now(timezone.utc).isoformat()
+            })
+        else:
+            inscritos = _carregar_json(ARQUIVO_INSCRITOS)
+            inscritos[user_id_str] = {
+                "nome": nome,
+                "inscrito_em": datetime.now(timezone.utc).isoformat()
             }
-            _salvar_json(ARQUIVO_CONFIG, dados)
-        return dados
+            _salvar_json(ARQUIVO_INSCRITOS, inscritos)
+
+    async def _listar_todos_inscritos(self):
+        """Retorna dict {user_id: {nome, inscrito_em}}."""
+        if _usando_mongo():
+            cursor = colecao_sorteio_inscritos.find({})
+            docs = await cursor.to_list(length=None)
+            return {doc["_id"]: doc for doc in docs}
+        else:
+            return _carregar_json(ARQUIVO_INSCRITOS)
+
+    async def _limpar_inscritos(self):
+        """Remove todos os inscritos."""
+        if _usando_mongo():
+            await colecao_sorteio_inscritos.delete_many({})
+        else:
+            _salvar_json(ARQUIVO_INSCRITOS, {})
+
+    # ==================== PERMISSÃO ====================
 
     def _tem_permissao_sorteio(self, user):
         """Verifica se o membro tem permissão para gerenciar sorteios."""
         if user.guild_permissions.administrator:
             return True
-        
         ids_permitidos = [CARGOS.get(nome) for nome in CARGOS_PERMITIDOS_SORTEIO if CARGOS.get(nome)]
         return any(cargo.id in ids_permitidos for cargo in user.roles)
+
+    # ==================== COMANDO PRINCIPAL ====================
 
     @commands.command(name="sorteio")
     async def sorteio(self, ctx, subcomando=None, *args):
         """Comando principal de sorteio."""
-        # Redireciona para subcomandos de admin
         if subcomando == "rodar":
             return await self._rodar_sorteio(ctx, args)
         elif subcomando == "listar":
@@ -67,11 +169,13 @@ class Sorteio(commands.Cog):
             return await self._configurar_tempo(ctx, args)
         elif subcomando == "premio":
             return await self._configurar_premio(ctx, args)
+        elif subcomando == "status":
+            return await self._ver_status(ctx)
         elif subcomando is not None:
-            return await ctx.send("❌ Subcomando inválido. Use: `!sorteio`, `!sorteio rodar`, `!sorteio listar`, `!sorteio tempo`, `!sorteio config`, `!sorteio premio`")
+            return await ctx.send("❌ Subcomando inválido. Use: `!sorteio`, `!sorteio rodar`, `!sorteio listar`, `!sorteio tempo`, `!sorteio config`, `!sorteio premio`, `!sorteio status`")
 
         # === FLUXO DE INSCRIÇÃO ===
-        config = self._garantir_config()
+        config = await self._garantir_config()
 
         # 1. Checagem de Ganhador Anterior
         ultimo_ganhador = config.get("ultimo_ganhador_id")
@@ -84,35 +188,22 @@ class Sorteio(commands.Cog):
             return await ctx.send(embed=embed)
 
         # 2. Checagem de Tempo em Call
-        dados_tempo = _carregar_json(ARQUIVO_TEMPO)
         user_id_str = str(ctx.author.id)
-        user_tempo = dados_tempo.get(user_id_str, {})
-        
-        minutos_acumulados = user_tempo.get("minutos_acumulados", 0)
-        # Se está em call agora, adiciona o tempo parcial
-        ultima_entrada = user_tempo.get("ultima_entrada")
-        if ultima_entrada:
-            try:
-                ultima_dt = datetime.fromisoformat(ultima_entrada)
-                agora = datetime.now(timezone.utc)
-                minutos_parciais = int((agora - ultima_dt).total_seconds() / 60)
-                minutos_acumulados += minutos_parciais
-            except (ValueError, TypeError):
-                pass
+        minutos_acumulados, ultima_entrada = await self._buscar_tempo_user(user_id_str)
+        minutos_total = self._calcular_minutos(minutos_acumulados, ultima_entrada)
 
         minimo_necessario = config.get("minuto_minimo", MINUTO_MINIMO_CALL_PADRAO)
-        
-        if minutos_acumulados < minimo_necessario:
+
+        if minutos_total < minimo_necessario:
             embed = discord.Embed(
                 title="❌ Tempo Insuficiente",
-                description=f"Você precisa de pelo menos **{minimo_necessario} minutos** de call para participar.\nSeu tempo atual é **{minutos_acumulados} minutos**.",
+                description=f"Você precisa de pelo menos **{minimo_necessario} minutos** de call para participar.\nSeu tempo atual é **{minutos_total} minutos**.",
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
 
         # 3. Verificar se já está inscrito
-        inscritos = _carregar_json(ARQUIVO_INSCRITOS)
-        if user_id_str in inscritos:
+        if await self._ja_inscrito(user_id_str):
             embed = discord.Embed(
                 title="⚠️ Já Inscrito",
                 description="Você já está inscrito neste sorteio!",
@@ -121,11 +212,7 @@ class Sorteio(commands.Cog):
             return await ctx.send(embed=embed)
 
         # 4. Inscrever
-        inscritos[user_id_str] = {
-            "nome": ctx.author.display_name,
-            "inscrito_em": datetime.now(timezone.utc).isoformat()
-        }
-        _salvar_json(ARQUIVO_INSCRITOS, inscritos)
+        await self._inscrever(user_id_str, ctx.author.display_name)
 
         embed = discord.Embed(
             title="✅ Inscrição Realizada!",
@@ -133,16 +220,18 @@ class Sorteio(commands.Cog):
             color=discord.Color.green()
         )
         embed.set_thumbnail(url=ctx.author.display_avatar.url)
-        embed.set_footer(text=f"Tempo acumulado: {minutos_acumulados} minutos")
+        embed.set_footer(text=f"Tempo acumulado: {minutos_total} minutos")
         await ctx.send(embed=embed)
+
+    # ==================== SUBCOMANDOS ====================
 
     async def _rodar_sorteio(self, ctx, args):
         """Roda o sorteio e seleciona um vencedor."""
         if not self._tem_permissao_sorteio(ctx.author):
             return await ctx.send("❌ Acesso Negado: Você não tem permissão para rodar o sorteio.")
 
-        config = self._garantir_config()
-        inscritos = _carregar_json(ARQUIVO_INSCRITOS)
+        config = await self._garantir_config()
+        inscritos = await self._listar_todos_inscritos()
 
         if not inscritos:
             embed = discord.Embed(
@@ -163,10 +252,10 @@ class Sorteio(commands.Cog):
         # Atualizar config: novo ganhador
         config["ultimo_ganhador_id"] = vencedor_id
         config["premio_atual"] = premio
-        _salvar_json(ARQUIVO_CONFIG, config)
+        await self._salvar_config(config)
 
         # Limpar inscritos
-        _salvar_json(ARQUIVO_INSCRITOS, {})
+        await self._limpar_inscritos()
 
         # Anunciar vencedor
         nome_vencedor = vencedor.display_name if vencedor else inscritos.get(vencedor_id, {}).get("nome", f"ID: {vencedor_id}")
@@ -189,7 +278,7 @@ class Sorteio(commands.Cog):
         if not self._tem_permissao_sorteio(ctx.author):
             return await ctx.send("❌ Acesso Negado: Você não tem permissão para listar inscritos.")
 
-        inscritos = _carregar_json(ARQUIVO_INSCRITOS)
+        inscritos = await self._listar_todos_inscritos()
 
         if not inscritos:
             embed = discord.Embed(
@@ -200,32 +289,21 @@ class Sorteio(commands.Cog):
             return await ctx.send(embed=embed)
 
         # Montar lista com tempo de call
-        dados_tempo = _carregar_json(ARQUIVO_TEMPO)
         lista_formatada = []
-        
+
         for user_id, dados in inscritos.items():
             member = ctx.guild.get_member(int(user_id))
             nome = member.display_name if member else dados.get("nome", f"ID: {user_id}")
-            
+
             # Buscar tempo
-            user_tempo = dados_tempo.get(user_id, {})
-            minutos = user_tempo.get("minutos_acumulados", 0)
-            
-            # Se está em call agora, adicionar tempo parcial
-            ultima_entrada = user_tempo.get("ultima_entrada")
-            if ultima_entrada:
-                try:
-                    ultima_dt = datetime.fromisoformat(ultima_entrada)
-                    agora = datetime.now(timezone.utc)
-                    minutos += int((agora - ultima_dt).total_seconds() / 60)
-                except (ValueError, TypeError):
-                    pass
-            
+            minutos_acumulados, ultima_entrada = await self._buscar_tempo_user(user_id)
+            minutos = self._calcular_minutos(minutos_acumulados, ultima_entrada)
+
             lista_formatada.append(f"• **{nome}** — {minutos} min")
 
         # Dividir em páginas se muito grande (max 20 por embed)
         paginas = [lista_formatada[i:i+20] for i in range(0, len(lista_formatada), 20)]
-        
+
         for idx, pagina in enumerate(paginas):
             embed = discord.Embed(
                 title=f"📋 Inscritos no Sorteio (Página {idx+1}/{len(paginas)})",
@@ -237,34 +315,49 @@ class Sorteio(commands.Cog):
 
     async def _ver_tempo(self, ctx, args):
         """Mostra o tempo acumulado em call de um membro."""
-        # Verificar se mencionou alguém
         if ctx.message.mentions:
             membro = ctx.message.mentions[0]
         else:
             membro = ctx.author
 
-        dados_tempo = _carregar_json(ARQUIVO_TEMPO)
-        user_tempo = dados_tempo.get(str(membro.id), {})
-        
-        minutos_acumulados = user_tempo.get("minutos_acumulados", 0)
-        
-        # Se está em call agora, mostrar tempo parcial
-        ultima_entrada = user_tempo.get("ultima_entrada")
-        if ultima_entrada:
-            try:
-                ultima_dt = datetime.fromisoformat(ultima_entrada)
-                agora = datetime.now(timezone.utc)
-                minutos_parciais = int((agora - ultima_dt).total_seconds() / 60)
-                minutos_acumulados += minutos_parciais
-            except (ValueError, TypeError):
-                pass
+        minutos_acumulados, ultima_entrada = await self._buscar_tempo_user(str(membro.id))
+        minutos_total = self._calcular_minutos(minutos_acumulados, ultima_entrada)
 
         embed = discord.Embed(
             title="⏱️ Tempo em Call",
-            description=f"**{membro.display_name}** possui **{minutos_acumulados} minutos** acumulados em call.",
+            description=f"**{membro.display_name}** possui **{minutos_total} minutos** acumulados em call.",
             color=discord.Color.blue()
         )
         embed.set_thumbnail(url=membro.display_avatar.url)
+        await ctx.send(embed=embed)
+
+    async def _ver_status(self, ctx):
+        """Mostra a configuração atual do sorteio."""
+        config = await self._garantir_config()
+
+        ultimo_ganhador = config.get("ultimo_ganhador_id")
+        if ultimo_ganhador:
+            membro = ctx.guild.get_member(int(ultimo_ganhador))
+            ganhador_texto = membro.mention if membro else f"ID: {ultimo_ganhador}"
+        else:
+            ganhador_texto = "Nenhum ainda"
+
+        embed = discord.Embed(
+            title="⚙️ Status do Sorteio",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="🏆 Último Ganhador", value=ganhador_texto, inline=False)
+        embed.add_field(name="🎁 Prêmio Atual", value=config.get("premio_atual", "A definir"), inline=False)
+        embed.add_field(name="⏱️ Tempo Mínimo", value=f"{config.get('minuto_minimo', MINUTO_MINIMO_CALL_PADRAO)} minutos", inline=False)
+
+        # Contar inscritos
+        inscritos = await self._listar_todos_inscritos()
+        embed.add_field(name="👥 Inscritos Atuais", value=str(len(inscritos)), inline=False)
+
+        # Indicar backend
+        backend = "MongoDB" if _usando_mongo() else "JSON (local)"
+        embed.set_footer(text=f"Backend: {backend}")
+
         await ctx.send(embed=embed)
 
     async def _configurar_tempo(self, ctx, args):
@@ -283,9 +376,9 @@ class Sorteio(commands.Cog):
         if minutos <= 0:
             return await ctx.send("❌ O tempo mínimo deve ser maior que 0 minutos.")
 
-        config = self._garantir_config()
+        config = await self._garantir_config()
         config["minuto_minimo"] = minutos
-        _salvar_json(ARQUIVO_CONFIG, config)
+        await self._salvar_config(config)
 
         embed = discord.Embed(
             title="⚙️ Configuração Atualizada",
@@ -304,9 +397,9 @@ class Sorteio(commands.Cog):
 
         premio = " ".join(args)
 
-        config = self._garantir_config()
+        config = await self._garantir_config()
         config["premio_atual"] = premio
-        _salvar_json(ARQUIVO_CONFIG, config)
+        await self._salvar_config(config)
 
         embed = discord.Embed(
             title="🎁 Prêmio Atualizado",
