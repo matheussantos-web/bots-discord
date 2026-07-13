@@ -2,6 +2,8 @@ import discord
 from discord.ext import commands, tasks
 import aiohttp
 import asyncio
+import json
+import os
 from datetime import datetime, timedelta, timezone
 
 from config import (
@@ -9,6 +11,24 @@ from config import (
     MONGO_URI, colecao_pontos, MINIMO_PESSOAS_CALL, PONTOS_POR_CICLO,
     MULTIPLICADOR_CALLER, MENSAGEM_CLASSES_ID, REACOES_CLASSES, CANAIS_GERADORES_IDS
 )
+
+# Arquivo JSON para tempo de call
+ARQUIVO_TEMPO = "data/tempo_call.json"
+
+def _carregar_tempo():
+    """Carrega os dados de tempo do arquivo JSON."""
+    if not os.path.exists(ARQUIVO_TEMPO):
+        return {}
+    try:
+        with open(ARQUIVO_TEMPO, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return {}
+
+def _salvar_tempo(dados):
+    """Salva os dados de tempo no arquivo JSON."""
+    with open(ARQUIVO_TEMPO, "w", encoding="utf-8") as f:
+        json.dump(dados, f, indent=4, ensure_ascii=False, default=str)
 
 class Automacoes(commands.Cog):
     def __init__(self, bot):
@@ -23,6 +43,8 @@ class Automacoes(commands.Cog):
             self.limpeza_automatica.start()
         if not self.farm_de_pontos.is_running():
             self.farm_de_pontos.start()
+        if not self.atualizar_tempo_call.is_running():
+            self.atualizar_tempo_call.start()
 
     # ==========================================
     # SISTEMA DE LIMPEZA AUTOMÁTICA
@@ -154,6 +176,36 @@ class Automacoes(commands.Cog):
                         )
 
     # ==========================================
+    # SISTEMA DE RASTREAMENTO DE TEMPO INDIVIDUAL EM CALL
+    # ==========================================
+    @tasks.loop(minutes=1)
+    async def atualizar_tempo_call(self):
+        dados_tempo = _carregar_tempo()
+
+        for guilda in self.bot.guilds:
+            for canal_voz in guilda.voice_channels:
+                for membro in canal_voz.members:
+                    if membro.bot:
+                        continue
+                    id_str = str(membro.id)
+                    user_tempo = dados_tempo.get(id_str, {})
+
+                    if user_tempo.get("ultima_entrada"):
+                        try:
+                            ultima = datetime.fromisoformat(user_tempo["ultima_entrada"])
+                            agora = datetime.now(timezone.utc)
+                            minutos_desde = (agora - ultima).total_seconds() / 60
+
+                            if minutos_desde >= 1:
+                                user_tempo["minutos_acumulados"] = user_tempo.get("minutos_acumulados", 0) + int(minutos_desde)
+                                user_tempo["ultima_entrada"] = agora.isoformat()
+                                dados_tempo[id_str] = user_tempo
+                        except (ValueError, TypeError):
+                            pass
+
+        _salvar_tempo(dados_tempo)
+
+    # ==========================================
     # EVENTOS DE CARGO POR REAÇÃO (REACTION ROLES)
     # ==========================================
     @commands.Cog.listener()
@@ -209,6 +261,45 @@ class Automacoes(commands.Cog):
     async def on_voice_state_update(self, member, before, after):
 
         print(f"👀 ALERTA: O bot detectou movimentação de voz do membro {member.name}!")
+
+        # --- RASTREAMENTO DE TEMPO INDIVIDUAL ---
+        dados_tempo = _carregar_tempo()
+        id_str = str(member.id)
+        user_tempo = dados_tempo.get(id_str, {"minutos_acumulados": 0, "ultima_entrada": None})
+
+        # Quando ENTRou em call (de fora para dentro)
+        if after.channel and not before.channel:
+            user_tempo["ultima_entrada"] = datetime.now(timezone.utc).isoformat()
+            dados_tempo[id_str] = user_tempo
+            _salvar_tempo(dados_tempo)
+
+        # Quando SAIU de call (de dentro para fora)
+        elif before.channel and not after.channel:
+            if user_tempo.get("ultima_entrada"):
+                try:
+                    ultima = datetime.fromisoformat(user_tempo["ultima_entrada"])
+                    agora = datetime.now(timezone.utc)
+                    minutos = int((agora - ultima).total_seconds() / 60)
+                    user_tempo["minutos_acumulados"] = user_tempo.get("minutos_acumulados", 0) + minutos
+                    user_tempo["ultima_entrada"] = None
+                    dados_tempo[id_str] = user_tempo
+                    _salvar_tempo(dados_tempo)
+                except (ValueError, TypeError):
+                    pass
+
+        # Quando MUDOU de canal (saiu e entrou em outro)
+        elif before.channel and after.channel and before.channel.id != after.channel.id:
+            if user_tempo.get("ultima_entrada"):
+                try:
+                    ultima = datetime.fromisoformat(user_tempo["ultima_entrada"])
+                    agora = datetime.now(timezone.utc)
+                    minutos = int((agora - ultima).total_seconds() / 60)
+                    user_tempo["minutos_acumulados"] = user_tempo.get("minutos_acumulados", 0) + minutos
+                    user_tempo["ultima_entrada"] = agora.isoformat()
+                    dados_tempo[id_str] = user_tempo
+                    _salvar_tempo(dados_tempo)
+                except (ValueError, TypeError):
+                    pass
 
         if after.channel:
             print(f"➡️ Canal destino: {after.channel.name} | ID: {after.channel.id}")

@@ -48,13 +48,17 @@ LIMITE_ADICAO_POR_VEZ = 10
 CARGOS_PERMITIDOS_ADICIONAR = ["lider", "SUB-LIDER", "caller", "caller novato"] 
 CARGOS_PERMITIDOS_REMOVER = ["lider", "SUB-LIDER"]
 
+# Configurações de Sorteio
+MINUTO_MINIMO_CALL_PADRAO = 60
+CARGOS_PERMITIDOS_SORTEIO = ["lider", "SUB-LIDER", "moderador"]
+
 # Conexão MongoDB
 MONGO_URI = os.getenv('MONGO_URI')
 if MONGO_URI:
     # Cria UMA ÚNICA conexão com o passe de segurança do certifi
     mongo_client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI, tlsCAFile=certifi.where())
     db = mongo_client["guilda_bot"]  
-    colecao_pontos = db["pontos"]    
+    colecao_pontos = db["pontos"]
 else:
     colecao_pontos = None
     print("⚠️ MONGO_URI não encontrada!")
