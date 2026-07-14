@@ -29,12 +29,16 @@ async def carregar_templates():
     if _usando_mongo():
         templates = {}
         async for doc in colecao_templates.find():
-            templates[doc["_id"]] = {"vagas": doc.get("vagas", {}), "descricao": doc.get("descricao")}
+            templates[doc["_id"]] = {"vagas": doc.get("vagas", {}), "descricao": doc.get("descricao"), "criador_id": doc.get("criador_id")}
         return templates
     if os.path.exists(TEMPLATES_PATH):
         try:
             with open(TEMPLATES_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
+                dados = json.load(f)
+            for nome, t in dados.items():
+                if "criador_id" not in t:
+                    t["criador_id"] = None
+            return dados
         except (json.JSONDecodeError, OSError):
             return {}
     return {}
@@ -44,7 +48,7 @@ async def salvar_templates(templates):
     if _usando_mongo():
         await colecao_templates.delete_many({})
         if templates:
-            docs = [{"_id": nome, "vagas": dados["vagas"], "descricao": dados.get("descricao")} for nome, dados in templates.items()]
+            docs = [{"_id": nome, "vagas": dados["vagas"], "descricao": dados.get("descricao"), "criador_id": dados.get("criador_id")} for nome, dados in templates.items()]
             await colecao_templates.insert_many(docs)
     else:
         with open(TEMPLATES_PATH, "w", encoding="utf-8") as f:
@@ -257,6 +261,11 @@ class PainelVagas(discord.ui.View):
         botao_encerrar.callback = self.encerrar_callback
         self.add_item(botao_encerrar)
 
+        # Botão de Editar Conteúdo
+        botao_editar = discord.ui.Button(label="Editar", style=discord.ButtonStyle.primary, emoji="✏️", row=1)
+        botao_editar.callback = self.editar_callback
+        self.add_item(botao_editar)
+
     def gerar_embed(self):
         titulo_destaque = f"💥 {self.conteudo.upper()} 💥"
 
@@ -358,6 +367,19 @@ class PainelVagas(discord.ui.View):
         else:
             await interaction.response.send_message("Você não está inscrito em nenhuma vaga.", ephemeral=True)
 
+    async def editar_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.autor_id and not interaction.user.guild_permissions.administrator:
+            ids_staff = [CARGOS.get(n) for n in ["lider", "SUB-LIDER", "moderador"] if CARGOS.get(n)]
+            if not any(c.id in ids_staff for c in interaction.user.roles):
+                return await interaction.response.send_message("❌ Apenas o líder da PT ou a staff pode editar.", ephemeral=True)
+
+        vagas_str = "\n".join(f"{c}:{q}" for c, q in self.max_vagas.items())
+        modal = ModalEditarConteudo(self, interaction.user)
+        modal.titulo.default = self.conteudo[:100]
+        modal.descricao_input.default = self.descricao or ""
+        modal.vagas_input.default = vagas_str
+        await interaction.response.send_modal(modal)
+
     async def encerrar_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.autor_id and not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("❌ Acesso Negado: Apenas o líder da PT ou a Staff pode fazer o call out!", ephemeral=True)
@@ -379,6 +401,84 @@ class PainelVagas(discord.ui.View):
         self.encerrado = True
         for item in self.children:
             item.disabled = True
+
+
+class ModalEditarConteudo(discord.ui.Modal, title="✏️ Editar Conteúdo"):
+    def __init__(self, painel: PainelVagas, usuario: discord.Member):
+        super().__init__()
+        self.painel = painel
+        self.usuario = usuario
+
+        self.titulo = discord.ui.TextInput(
+            label="Título do Conteúdo",
+            style=discord.TextStyle.short,
+            max_length=100,
+            required=True,
+        )
+        self.descricao_input = discord.ui.TextInput(
+            label="Descrição (Opcional)",
+            style=discord.TextStyle.paragraph,
+            max_length=500,
+            required=False,
+        )
+        self.vagas_input = discord.ui.TextInput(
+            label="Vagas (uma por linha: Classe:Qtd)",
+            style=discord.TextStyle.paragraph,
+            required=True,
+        )
+        self.add_item(self.titulo)
+        self.add_item(self.descricao_input)
+        self.add_item(self.vagas_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        conteudo = self.titulo.value.strip()
+        descricao = self.descricao_input.value.strip() or None
+
+        definicao_vagas = {}
+        for linha in self.vagas_input.value.splitlines():
+            linha_limpa = linha.strip().rstrip(',').strip()
+            if not linha_limpa:
+                continue
+            if ":" not in linha_limpa:
+                return await interaction.response.send_message(
+                    f"❌ Formato inválido em `{linha_limpa}`. Use `Classe:Qtd`.", ephemeral=True
+                )
+            nome_classe, qtd = linha_limpa.split(":", 1)
+            qtd = qtd.strip()
+            if not qtd.isdigit():
+                return await interaction.response.send_message(
+                    f"❌ Quantidade inválida em `{linha_limpa}`. Use um número.", ephemeral=True
+                )
+            definicao_vagas[nome_classe.strip()] = int(qtd)
+
+        if not definicao_vagas:
+            return await interaction.response.send_message(
+                "❌ Você precisa adicionar pelo menos uma vaga.", ephemeral=True
+            )
+
+        antigo_conteudo = self.painel.conteudo
+        self.painel.conteudo = conteudo
+        self.painel.descricao = descricao
+        self.painel.max_vagas = definicao_vagas
+
+        novas_classes = set(definicao_vagas.keys())
+        antigas_classes = set(self.painel.jogadores.keys())
+
+        for classe in antigas_classes - novas_classes:
+            del self.painel.jogadores[classe]
+            del self.painel.fila_espera[classe]
+        for classe in novas_classes - antigas_classes:
+            self.painel.jogadores[classe] = []
+            self.painel.fila_espera[classe] = []
+
+        eventos_atuais = await carregar_eventos()
+        for evento in eventos_atuais:
+            if evento.get("jump_url") == interaction.message.jump_url:
+                evento["conteudo"] = conteudo
+                break
+        await salvar_eventos(eventos_atuais)
+
+        await interaction.response.edit_message(embed=self.painel.gerar_embed(), view=self.painel)
 
 
 # ==========================================
@@ -447,7 +547,7 @@ class ItemMenuTemplate(discord.ui.Select):
         if template.get("descricao"):
             embed.add_field(name="Descrição", value=template["descricao"], inline=False)
 
-        await interaction.response.edit_message(content=None, embed=embed, view=ViewConfirmarRemocaoTemplate(self.cog, escolha))
+        await interaction.response.edit_message(content=None, embed=embed, view=ViewConfirmarRemocaoTemplate(self.cog, escolha, interaction.user))
 
 
 class ViewMenuTemplate(discord.ui.View):
@@ -457,13 +557,39 @@ class ViewMenuTemplate(discord.ui.View):
 
 
 class ViewConfirmarRemocaoTemplate(discord.ui.View):
-    def __init__(self, cog: "LFG", nome: str):
+    def __init__(self, cog: "LFG", nome: str, usuario: discord.Member = None):
         super().__init__(timeout=60)
         self.cog = cog
         self.nome = nome
+        self.usuario = usuario
+
+    def _pode_editar(self):
+        if self.usuario is None:
+            return False
+        template = self.cog.templates.get(self.nome)
+        if not template:
+            return False
+        criador_id = template.get("criador_id")
+        if criador_id and self.usuario.id == criador_id:
+            return True
+        if self.usuario.guild_permissions.administrator:
+            return True
+        ids_staff = [CARGOS.get(n) for n in ["lider", "SUB-LIDER", "moderador"] if CARGOS.get(n)]
+        return any(c.id in ids_staff for c in self.usuario.roles)
+
+    @discord.ui.button(label="✏️ Editar Template", style=discord.ButtonStyle.primary)
+    async def editar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._pode_editar():
+            return await interaction.response.send_message("❌ Você não tem permissão para editar este template.", ephemeral=True)
+        template = self.cog.templates.get(self.nome)
+        if not template:
+            return await interaction.response.edit_message(content="❌ Template não encontrado.", embed=None, view=None)
+        await interaction.response.send_modal(ModalEditarTemplate(self.cog, self.nome, template))
 
     @discord.ui.button(label="🗑️ Remover Template", style=discord.ButtonStyle.danger)
     async def remover(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._pode_editar():
+            return await interaction.response.send_message("❌ Você não tem permissão para remover este template.", ephemeral=True)
         if self.nome in self.cog.templates:
             del self.cog.templates[self.nome]
             await salvar_templates(self.cog.templates)
@@ -474,6 +600,83 @@ class ViewConfirmarRemocaoTemplate(discord.ui.View):
     @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary)
     async def cancelar(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(content="Ação cancelada.", embed=None, view=None)
+
+
+class ModalEditarTemplate(discord.ui.Modal, title="✏️ Editar Template"):
+    def __init__(self, cog: "LFG", nome_template: str, template: dict):
+        super().__init__()
+        self.cog = cog
+        self.nome_original = nome_template
+
+        vagas_str = "\n".join(f"{c}:{q}" for c, q in template["vagas"].items())
+
+        self.nome_input = discord.ui.TextInput(
+            label="Nome do Template",
+            style=discord.TextStyle.short,
+            default=nome_template[:50],
+            max_length=50,
+            required=True,
+        )
+        self.descricao_input = discord.ui.TextInput(
+            label="Descrição (Opcional)",
+            style=discord.TextStyle.paragraph,
+            default=template.get("descricao") or "",
+            max_length=500,
+            required=False,
+        )
+        self.vagas_input = discord.ui.TextInput(
+            label="Vagas (uma por linha: Classe:Qtd)",
+            style=discord.TextStyle.paragraph,
+            default=vagas_str,
+            required=True,
+        )
+        self.add_item(self.nome_input)
+        self.add_item(self.descricao_input)
+        self.add_item(self.vagas_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        novo_nome = self.nome_input.value.strip()
+        descricao = self.descricao_input.value.strip() or None
+
+        definicao_vagas = {}
+        for linha in self.vagas_input.value.splitlines():
+            linha_limpa = linha.strip().rstrip(',').strip()
+            if not linha_limpa:
+                continue
+            if ":" not in linha_limpa:
+                return await interaction.response.send_message(
+                    f"❌ Formato inválido em `{linha_limpa}`. Use `Classe:Qtd`.", ephemeral=True
+                )
+            nome_classe, qtd = linha_limpa.split(":", 1)
+            qtd = qtd.strip()
+            if not qtd.isdigit():
+                return await interaction.response.send_message(
+                    f"❌ Quantidade inválida em `{linha_limpa}`. Use um número.", ephemeral=True
+                )
+            definicao_vagas[nome_classe.strip()] = int(qtd)
+
+        if not definicao_vagas:
+            return await interaction.response.send_message(
+                "❌ Você precisa adicionar pelo menos uma vaga.", ephemeral=True
+            )
+
+        template_antigo = self.cog.templates.get(self.nome_original)
+        criador_id = template_antigo.get("criador_id") if template_antigo else interaction.user.id
+
+        if novo_nome != self.nome_original:
+            del self.cog.templates[self.nome_original]
+
+        self.cog.templates[novo_nome] = {
+            "vagas": definicao_vagas,
+            "descricao": descricao,
+            "criador_id": criador_id
+        }
+        await salvar_templates(self.cog.templates)
+
+        await interaction.response.edit_message(
+            content=f"✅ Template **{novo_nome}** atualizado com sucesso!",
+            embed=None, view=None
+        )
 
 
 class ModalUsarTemplate(discord.ui.Modal, title="🎮 Criar Conteúdo (Template)"):
@@ -571,7 +774,7 @@ class ModalCriarTemplate(discord.ui.Modal, title="📋 Criar Template"):
                 "❌ Você precisa adicionar pelo menos uma vaga (ex: `Tank:2`).", ephemeral=True
             )
 
-        self.cog.templates[nome] = {"vagas": definicao_vagas, "descricao": descricao}
+        self.cog.templates[nome] = {"vagas": definicao_vagas, "descricao": descricao, "criador_id": interaction.user.id}
         await salvar_templates(self.cog.templates)
 
         await interaction.response.send_message(f"✅ Template **{nome}** salvo com sucesso! Já aparece no `/content`.", ephemeral=True)

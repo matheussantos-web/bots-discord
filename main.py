@@ -1,8 +1,11 @@
 import discord
 from discord.ext import commands
 import os
+import sys
 from dotenv import load_dotenv
 from keep_alive import keep_alive
+
+sys.stdout.reconfigure(encoding='utf-8')
 
 # Carrega as senhas do arquivo .env
 load_dotenv()
@@ -29,8 +32,8 @@ bot = MeuBot(command_prefix="!", intents=intents, help_command=None)
 
 @bot.event
 async def on_ready():
-    await bot.tree.sync()
-    print(f'🔥 Sistema Mestre online! Operando como {bot.user}.')
+    synced = await bot.tree.sync()
+    print(f'🔥 Sistema Mestre online! Operando como {bot.user}. Sincronizados {len(synced)} comandos slash.')
 
 keep_alive() 
 bot.run(os.getenv('TOKEN_DO_BOT'))
