@@ -211,6 +211,8 @@ class Automacoes(commands.Cog):
                                 minutos_desde = (agora - user_tempo["ultima_entrada"]).total_seconds() / 60
                                 if minutos_desde >= 1:
                                     await _atualizar_tempo_mongo(id_str, int(minutos_desde), agora)
+                            else:
+                                await _salvar_entrada_mongo(id_str, datetime.now(timezone.utc))
                         else:
                             dados_tempo = _carregar_tempo()
                             user_tempo = dados_tempo.get(id_str, {})
@@ -227,6 +229,10 @@ class Automacoes(commands.Cog):
                                         dados_tempo[id_str] = user_tempo
                                 except (ValueError, TypeError):
                                     pass
+                            else:
+                                agora = datetime.now(timezone.utc)
+                                user_tempo["ultima_entrada"] = agora.isoformat()
+                                dados_tempo[id_str] = user_tempo
                             _salvar_tempo(dados_tempo)
         except Exception as e:
             print(f"⚠️ Erro no loop de tempo de call: {e}")
