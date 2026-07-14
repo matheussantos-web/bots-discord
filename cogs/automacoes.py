@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from config import (
     CANAL_LIMPEZA_ID, CARGOS, GUILDA_ALBION_ID, ALIANCA_ALBION_ID,
-    MONGO_URI, colecao_pontos, colecao_tempo_call,
+    MONGO_URI, colecao_tempo_call,
     MINIMO_PESSOAS_CALL, PONTOS_POR_CICLO,
     MULTIPLICADOR_CALLER, MENSAGEM_CLASSES_ID, REACOES_CLASSES, CANAIS_GERADORES_IDS
 )
@@ -189,27 +189,7 @@ class Automacoes(commands.Cog):
     # ==========================================
     @tasks.loop(minutes=10)
     async def farm_de_pontos(self):
-        if not MONGO_URI:
-            return
-
-        for guilda in self.bot.guilds:
-            cargos_bonus = [CARGOS.get("caller"), CARGOS.get("caller novato")]
-
-            for canal_voz in guilda.voice_channels:
-                membros_na_call = [m for m in canal_voz.members if not m.bot]
-
-                if len(membros_na_call) >= MINIMO_PESSOAS_CALL:
-                    for membro in membros_na_call:
-                        id_str = str(membro.id)
-                        eh_caller = any(c.id in cargos_bonus for c in membro.roles)
-
-                        pontos_ganhos = (PONTOS_POR_CICLO * MULTIPLICADOR_CALLER) if eh_caller else PONTOS_POR_CICLO
-
-                        await colecao_pontos.update_one(
-                            {"_id": id_str},
-                            {"$inc": {"pontos": pontos_ganhos}},
-                            upsert=True
-                        )
+        pass
 
     # ==========================================
     # SISTEMA DE RASTREAMENTO DE TEMPO INDIVIDUAL EM CALL
