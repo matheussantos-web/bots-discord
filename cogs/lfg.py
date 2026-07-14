@@ -6,8 +6,7 @@ from discord import app_commands
 from discord.ext import commands
 from datetime import datetime, timedelta, timezone
 
-# Importa os cargos do seu arquivo de configuração
-from config import CARGOS
+from config import CARGOS, MONGO_URI, colecao_templates, colecao_eventos
 
 FUSO = timezone(timedelta(hours=-4))
 
@@ -19,11 +18,19 @@ DIAS_SEMANA = {
 TEMPLATES_PATH = "data/templates.json"
 EVENTOS_PATH = "data/eventos.json"
 
+def _usando_mongo():
+    return MONGO_URI is not None and colecao_templates is not None
+
 # ==========================================
 # PERSISTÊNCIA DE TEMPLATES
 # ==========================================
 
-def carregar_templates():
+async def carregar_templates():
+    if _usando_mongo():
+        templates = {}
+        async for doc in colecao_templates.find():
+            templates[doc["_id"]] = {"vagas": doc.get("vagas", {}), "descricao": doc.get("descricao")}
+        return templates
     if os.path.exists(TEMPLATES_PATH):
         try:
             with open(TEMPLATES_PATH, "r", encoding="utf-8") as f:
@@ -33,16 +40,27 @@ def carregar_templates():
     return {}
 
 
-def salvar_templates(templates):
-    with open(TEMPLATES_PATH, "w", encoding="utf-8") as f:
-        json.dump(templates, f, ensure_ascii=False, indent=2)
+async def salvar_templates(templates):
+    if _usando_mongo():
+        await colecao_templates.delete_many({})
+        if templates:
+            docs = [{"_id": nome, "vagas": dados["vagas"], "descricao": dados.get("descricao")} for nome, dados in templates.items()]
+            await colecao_templates.insert_many(docs)
+    else:
+        with open(TEMPLATES_PATH, "w", encoding="utf-8") as f:
+            json.dump(templates, f, ensure_ascii=False, indent=2)
 
 
 # ==========================================
 # PERSISTÊNCIA DA AGENDA (eventos_ativos)
 # ==========================================
 
-def carregar_eventos():
+async def carregar_eventos():
+    if _usando_mongo():
+        eventos = []
+        async for doc in colecao_eventos.find():
+            eventos.append(doc)
+        return eventos
     if os.path.exists(EVENTOS_PATH):
         try:
             with open(EVENTOS_PATH, "r", encoding="utf-8") as f:
@@ -52,9 +70,14 @@ def carregar_eventos():
     return []
 
 
-def salvar_eventos(eventos):
-    with open(EVENTOS_PATH, "w", encoding="utf-8") as f:
-        json.dump(eventos, f, ensure_ascii=False, indent=2)
+async def salvar_eventos(eventos):
+    if _usando_mongo():
+        await colecao_eventos.delete_many({})
+        if eventos:
+            await colecao_eventos.insert_many(eventos)
+    else:
+        with open(EVENTOS_PATH, "w", encoding="utf-8") as f:
+            json.dump(eventos, f, ensure_ascii=False, indent=2)
 
 
 def eventos_validos(eventos):
@@ -342,12 +365,12 @@ class PainelVagas(discord.ui.View):
         self.encerrer_painel()
 
         # Atualiza o arquivo JSON para marcar o evento como encerrado
-        eventos_atuais = carregar_eventos()
+        eventos_atuais = await carregar_eventos()
         for evento in eventos_atuais:
             if evento.get("jump_url") == interaction.message.jump_url:
                 evento["encerrado"] = True
                 break
-        salvar_eventos(eventos_atuais)
+        await salvar_eventos(eventos_atuais)
 
         await interaction.response.edit_message(embed=self.gerar_embed(), view=self)
         await interaction.followup.send(f"🛑 **{interaction.user.display_name}** deu Call Out e encerrou o conteúdo: **{self.conteudo}**!")
@@ -443,7 +466,7 @@ class ViewConfirmarRemocaoTemplate(discord.ui.View):
     async def remover(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.nome in self.cog.templates:
             del self.cog.templates[self.nome]
-            salvar_templates(self.cog.templates)
+            await salvar_templates(self.cog.templates)
             await interaction.response.edit_message(content=f"🗑️ Template **{self.nome}** removido.", embed=None, view=None)
         else:
             await interaction.response.edit_message(content="❌ Esse template já tinha sido removido.", embed=None, view=None)
@@ -549,7 +572,7 @@ class ModalCriarTemplate(discord.ui.Modal, title="📋 Criar Template"):
             )
 
         self.cog.templates[nome] = {"vagas": definicao_vagas, "descricao": descricao}
-        salvar_templates(self.cog.templates)
+        await salvar_templates(self.cog.templates)
 
         await interaction.response.send_message(f"✅ Template **{nome}** salvo com sucesso! Já aparece no `/content`.", ephemeral=True)
 
@@ -635,10 +658,14 @@ class ModalCriarConteudo(discord.ui.Modal, title="🎮 Criar Conteúdo"):
 class LFG(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        # Filtra os eventos ativos trazendo apenas os válidos e NÃO encerrados
-        self.eventos_ativos = eventos_validos(carregar_eventos())
-        salvar_eventos(self.eventos_ativos)
-        self.templates = carregar_templates()
+        self.eventos_ativos = []
+        self.templates = {}
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        self.eventos_ativos = eventos_validos(await carregar_eventos())
+        await salvar_eventos(self.eventos_ativos)
+        self.templates = await carregar_templates()
 
     def montar_embed_templates(self):
         embed = discord.Embed(title="📋 Templates Salvos — Die Hard", color=discord.Color.blurple())
@@ -671,9 +698,9 @@ class LFG(commands.Cog):
             "autor_id": interaction.user.id,
             "unix_timestamp": unix_timestamp,
             "jump_url": mensagem_painel.jump_url,
-            "encerrado": False,  # Criado por padrão como ativo
+            "encerrado": False,
         })
-        salvar_eventos(self.eventos_ativos)
+        await salvar_eventos(self.eventos_ativos)
 
     @app_commands.command(name="content", description="Criar um painel de vagas para organizar conteúdo em grupo")
     async def content(self, interaction: discord.Interaction):
@@ -697,9 +724,8 @@ class LFG(commands.Cog):
 
     @commands.command(name="agenda")
     async def agenda(self, ctx):
-        # Valida limpando expirados e encerrados antes de exibir
-        self.eventos_ativos = eventos_validos(carregar_eventos())
-        salvar_eventos(self.eventos_ativos)
+        self.eventos_ativos = eventos_validos(await carregar_eventos())
+        await salvar_eventos(self.eventos_ativos)
 
         if not self.eventos_ativos:
             return await ctx.send("📭 Nenhum Ping agendada no momento. Crie um com `/content`.", delete_after=30)
