@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from config import CARGOS, MONGO_URI, colecao_templates, colecao_eventos
 
-FUSO = timezone(timedelta(hours=-4))
+FUSO = timezone(timedelta(hours=-3))
 
 DIAS_SEMANA = {
     "seg": 0, "ter": 1, "qua": 2, "qui": 3,
