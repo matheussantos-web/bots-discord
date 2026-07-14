@@ -55,10 +55,15 @@ CARGOS_PERMITIDOS_SORTEIO = ["lider", "SUB-LIDER", "moderador"]
 # Conexão MongoDB
 MONGO_URI = os.getenv('MONGO_URI')
 if MONGO_URI:
-    # Cria UMA ÚNICA conexão com o passe de segurança do certifi
     mongo_client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI, tlsCAFile=certifi.where())
-    db = mongo_client["guilda_bot"]  
+    db = mongo_client["guilda_bot"]
     colecao_pontos = db["pontos"]
+    colecao_sorteio_config = db["sorteio_config"]
+    colecao_sorteio_inscritos = db["sorteio_inscritos"]
+    colecao_tempo_call = db["tempo_call"]
 else:
     colecao_pontos = None
+    colecao_sorteio_config = None
+    colecao_sorteio_inscritos = None
+    colecao_tempo_call = None
     print("⚠️ MONGO_URI não encontrada!")
