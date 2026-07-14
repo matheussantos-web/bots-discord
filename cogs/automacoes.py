@@ -185,61 +185,66 @@ class Automacoes(commands.Cog):
     # ==========================================
     @tasks.loop(minutes=1)
     async def atualizar_tempo_call(self):
-        if _usando_mongo():
-            # MongoDB: atualizar diretamente no banco
-            for guilda in self.bot.guilds:
-                for canal_voz in guilda.voice_channels:
-                    for membro in canal_voz.members:
-                        if membro.bot:
-                            continue
-                        id_str = str(membro.id)
-                        doc = await colecao_tempo_call.find_one({"_id": id_str})
+        try:
+            if _usando_mongo():
+                # MongoDB: atualizar diretamente no banco
+                for guilda in self.bot.guilds:
+                    for canal_voz in guilda.voice_channels:
+                        for membro in canal_voz.members:
+                            if membro.bot:
+                                continue
+                            id_str = str(membro.id)
+                            doc = await colecao_tempo_call.find_one({"_id": id_str})
 
-                        if doc and doc.get("ultima_entrada"):
-                            try:
-                                ultima = doc["ultima_entrada"]
-                                if isinstance(ultima, str):
-                                    ultima = datetime.fromisoformat(ultima)
-                                agora = datetime.now(timezone.utc)
-                                minutos_desde = (agora - ultima).total_seconds() / 60
+                            if doc and doc.get("ultima_entrada"):
+                                try:
+                                    ultima = doc["ultima_entrada"]
+                                    if isinstance(ultima, str):
+                                        ultima = datetime.fromisoformat(ultima)
+                                    if ultima.tzinfo is None:
+                                        ultima = ultima.replace(tzinfo=timezone.utc)
+                                    agora = datetime.now(timezone.utc)
+                                    minutos_desde = (agora - ultima).total_seconds() / 60
 
-                                if minutos_desde >= 1:
-                                    await colecao_tempo_call.update_one(
-                                        {"_id": id_str},
-                                        {
-                                            "$inc": {"minutos_acumulados": int(minutos_desde)},
-                                            "$set": {"ultima_entrada": agora}
-                                        },
-                                        upsert=True
-                                    )
-                            except (ValueError, TypeError):
-                                pass
-        else:
-            # JSON: fallback local
-            dados_tempo = _carregar_tempo()
+                                    if minutos_desde >= 1:
+                                        await colecao_tempo_call.update_one(
+                                            {"_id": id_str},
+                                            {
+                                                "$inc": {"minutos_acumulados": int(minutos_desde)},
+                                                "$set": {"ultima_entrada": agora.replace(tzinfo=None)}
+                                            },
+                                            upsert=True
+                                        )
+                                except (ValueError, TypeError) as e:
+                                    print(f"⚠️ Erro ao atualizar tempo (mongo) para {id_str}: {e}")
+            else:
+                # JSON: fallback local
+                dados_tempo = _carregar_tempo()
 
-            for guilda in self.bot.guilds:
-                for canal_voz in guilda.voice_channels:
-                    for membro in canal_voz.members:
-                        if membro.bot:
-                            continue
-                        id_str = str(membro.id)
-                        user_tempo = dados_tempo.get(id_str, {})
+                for guilda in self.bot.guilds:
+                    for canal_voz in guilda.voice_channels:
+                        for membro in canal_voz.members:
+                            if membro.bot:
+                                continue
+                            id_str = str(membro.id)
+                            user_tempo = dados_tempo.get(id_str, {})
 
-                        if user_tempo.get("ultima_entrada"):
-                            try:
-                                ultima = datetime.fromisoformat(user_tempo["ultima_entrada"])
-                                agora = datetime.now(timezone.utc)
-                                minutos_desde = (agora - ultima).total_seconds() / 60
+                            if user_tempo.get("ultima_entrada"):
+                                try:
+                                    ultima = datetime.fromisoformat(user_tempo["ultima_entrada"])
+                                    agora = datetime.now(timezone.utc)
+                                    minutos_desde = (agora - ultima).total_seconds() / 60
 
-                                if minutos_desde >= 1:
-                                    user_tempo["minutos_acumulados"] = user_tempo.get("minutos_acumulados", 0) + int(minutos_desde)
-                                    user_tempo["ultima_entrada"] = agora.isoformat()
-                                    dados_tempo[id_str] = user_tempo
-                            except (ValueError, TypeError):
-                                pass
+                                    if minutos_desde >= 1:
+                                        user_tempo["minutos_acumulados"] = user_tempo.get("minutos_acumulados", 0) + int(minutos_desde)
+                                        user_tempo["ultima_entrada"] = agora.isoformat()
+                                        dados_tempo[id_str] = user_tempo
+                                except (ValueError, TypeError):
+                                    pass
 
-            _salvar_tempo(dados_tempo)
+                _salvar_tempo(dados_tempo)
+        except Exception as e:
+            print(f"⚠️ Erro no loop atualizar_tempo_call: {e}")
 
     # ==========================================
     # EVENTOS DE CARGO POR REAÇÃO (REACTION ROLES)
@@ -301,84 +306,92 @@ class Automacoes(commands.Cog):
         # --- RASTREAMENTO DE TEMPO INDIVIDUAL ---
         id_str = str(member.id)
         agora = datetime.now(timezone.utc)
+        agora_naive = agora.replace(tzinfo=None)
 
-        if _usando_mongo():
-            # MongoDB
-            if after.channel and not before.channel:
-                # Entrou em call
-                await colecao_tempo_call.update_one(
-                    {"_id": id_str},
-                    {"$set": {"ultima_entrada": agora}},
-                    upsert=True
-                )
-            elif before.channel and not after.channel:
-                # Saiu de call
-                doc = await colecao_tempo_call.find_one({"_id": id_str})
-                if doc and doc.get("ultima_entrada"):
-                    ultima = doc["ultima_entrada"]
-                    if isinstance(ultima, str):
-                        ultima = datetime.fromisoformat(ultima)
-                    minutos = int((agora - ultima).total_seconds() / 60)
+        try:
+            if _usando_mongo():
+                # MongoDB
+                if after.channel and not before.channel:
+                    # Entrou em call
                     await colecao_tempo_call.update_one(
                         {"_id": id_str},
-                        {
-                            "$inc": {"minutos_acumulados": minutos},
-                            "$set": {"ultima_entrada": None}
-                        },
+                        {"$set": {"ultima_entrada": agora_naive}},
                         upsert=True
                     )
-            elif before.channel and after.channel and before.channel.id != after.channel.id:
-                # Mudou de canal
-                doc = await colecao_tempo_call.find_one({"_id": id_str})
-                if doc and doc.get("ultima_entrada"):
-                    ultima = doc["ultima_entrada"]
-                    if isinstance(ultima, str):
-                        ultima = datetime.fromisoformat(ultima)
-                    minutos = int((agora - ultima).total_seconds() / 60)
-                    await colecao_tempo_call.update_one(
-                        {"_id": id_str},
-                        {
-                            "$inc": {"minutos_acumulados": minutos},
-                            "$set": {"ultima_entrada": agora}
-                        },
-                        upsert=True
-                    )
-        else:
-            # JSON fallback
-            dados_tempo = _carregar_tempo()
-            user_tempo = dados_tempo.get(id_str, {"minutos_acumulados": 0, "ultima_entrada": None})
-
-            if after.channel and not before.channel:
-                # Entrou em call
-                user_tempo["ultima_entrada"] = agora.isoformat()
-                dados_tempo[id_str] = user_tempo
-                _salvar_tempo(dados_tempo)
-
-            elif before.channel and not after.channel:
-                # Saiu de call
-                if user_tempo.get("ultima_entrada"):
-                    try:
-                        ultima = datetime.fromisoformat(user_tempo["ultima_entrada"])
+                elif before.channel and not after.channel:
+                    # Saiu de call
+                    doc = await colecao_tempo_call.find_one({"_id": id_str})
+                    if doc and doc.get("ultima_entrada"):
+                        ultima = doc["ultima_entrada"]
+                        if isinstance(ultima, str):
+                            ultima = datetime.fromisoformat(ultima)
+                        if ultima.tzinfo is None:
+                            ultima = ultima.replace(tzinfo=timezone.utc)
                         minutos = int((agora - ultima).total_seconds() / 60)
-                        user_tempo["minutos_acumulados"] = user_tempo.get("minutos_acumulados", 0) + minutos
-                        user_tempo["ultima_entrada"] = None
-                        dados_tempo[id_str] = user_tempo
-                        _salvar_tempo(dados_tempo)
-                    except (ValueError, TypeError):
-                        pass
-
-            elif before.channel and after.channel and before.channel.id != after.channel.id:
-                # Mudou de canal
-                if user_tempo.get("ultima_entrada"):
-                    try:
-                        ultima = datetime.fromisoformat(user_tempo["ultima_entrada"])
+                        await colecao_tempo_call.update_one(
+                            {"_id": id_str},
+                            {
+                                "$inc": {"minutos_acumulados": minutos},
+                                "$set": {"ultima_entrada": None}
+                            },
+                            upsert=True
+                        )
+                elif before.channel and after.channel and before.channel.id != after.channel.id:
+                    # Mudou de canal
+                    doc = await colecao_tempo_call.find_one({"_id": id_str})
+                    if doc and doc.get("ultima_entrada"):
+                        ultima = doc["ultima_entrada"]
+                        if isinstance(ultima, str):
+                            ultima = datetime.fromisoformat(ultima)
+                        if ultima.tzinfo is None:
+                            ultima = ultima.replace(tzinfo=timezone.utc)
                         minutos = int((agora - ultima).total_seconds() / 60)
-                        user_tempo["minutos_acumulados"] = user_tempo.get("minutos_acumulados", 0) + minutos
-                        user_tempo["ultima_entrada"] = agora.isoformat()
-                        dados_tempo[id_str] = user_tempo
-                        _salvar_tempo(dados_tempo)
-                    except (ValueError, TypeError):
-                        pass
+                        await colecao_tempo_call.update_one(
+                            {"_id": id_str},
+                            {
+                                "$inc": {"minutos_acumulados": minutos},
+                                "$set": {"ultima_entrada": agora_naive}
+                            },
+                            upsert=True
+                        )
+            else:
+                # JSON fallback
+                dados_tempo = _carregar_tempo()
+                user_tempo = dados_tempo.get(id_str, {"minutos_acumulados": 0, "ultima_entrada": None})
+
+                if after.channel and not before.channel:
+                    # Entrou em call
+                    user_tempo["ultima_entrada"] = agora.isoformat()
+                    dados_tempo[id_str] = user_tempo
+                    _salvar_tempo(dados_tempo)
+
+                elif before.channel and not after.channel:
+                    # Saiu de call
+                    if user_tempo.get("ultima_entrada"):
+                        try:
+                            ultima = datetime.fromisoformat(user_tempo["ultima_entrada"])
+                            minutos = int((agora - ultima).total_seconds() / 60)
+                            user_tempo["minutos_acumulados"] = user_tempo.get("minutos_acumulados", 0) + minutos
+                            user_tempo["ultima_entrada"] = None
+                            dados_tempo[id_str] = user_tempo
+                            _salvar_tempo(dados_tempo)
+                        except (ValueError, TypeError):
+                            pass
+
+                elif before.channel and after.channel and before.channel.id != after.channel.id:
+                    # Mudou de canal
+                    if user_tempo.get("ultima_entrada"):
+                        try:
+                            ultima = datetime.fromisoformat(user_tempo["ultima_entrada"])
+                            minutos = int((agora - ultima).total_seconds() / 60)
+                            user_tempo["minutos_acumulados"] = user_tempo.get("minutos_acumulados", 0) + minutos
+                            user_tempo["ultima_entrada"] = agora.isoformat()
+                            dados_tempo[id_str] = user_tempo
+                            _salvar_tempo(dados_tempo)
+                        except (ValueError, TypeError):
+                            pass
+        except Exception as e:
+            print(f"⚠️ Erro no rastreamento de tempo: {e}")
 
         if after.channel:
             print(f"➡️ Canal destino: {after.channel.name} | ID: {after.channel.id}")
