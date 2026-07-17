@@ -12,6 +12,7 @@ from config import (
     MINIMO_PESSOAS_CALL, PONTOS_POR_CICLO,
     MULTIPLICADOR_CALLER, MENSAGEM_CLASSES_ID, REACOES_CLASSES, CANAIS_GERADORES_IDS
 )
+from checkin_helper import registrar_checkin, finalizar_checkin
 
 # Arquivo JSON para tempo de call (fallback local)
 ARQUIVO_TEMPO = "data/tempo_call.json"
@@ -414,6 +415,36 @@ class Automacoes(commands.Cog):
                     self.calls_temporarias.discard(before.channel.id)
                 except Exception as e:
                     print(f"⚠️ Erro ao apagar call temporária: {e}")
+
+        # --- 3. CHECK-IN EM CALLS DE CONTEÚDO ---
+        try:
+            lfg_cog = self.bot.get_cog("LFG")
+            if lfg_cog:
+                call_ids_ativos = set()
+                for evento in lfg_cog.eventos_ativos:
+                    cid = evento.get("call_id")
+                    if cid and not evento.get("encerrado"):
+                        call_ids_ativos.add(cid)
+
+                if after.channel and not before.channel:
+                    if after.channel.id in call_ids_ativos:
+                        evento = next((e for e in lfg_cog.eventos_ativos if e.get("call_id") == after.channel.id), None)
+                        if evento:
+                            await registrar_checkin(id_str, evento["conteudo"], after.channel.id)
+
+                elif before.channel and not after.channel:
+                    if before.channel.id in call_ids_ativos:
+                        await finalizar_checkin(id_str, before.channel.id)
+
+                elif before.channel and after.channel and before.channel.id != after.channel.id:
+                    if before.channel.id in call_ids_ativos:
+                        await finalizar_checkin(id_str, before.channel.id)
+                    if after.channel.id in call_ids_ativos:
+                        evento = next((e for e in lfg_cog.eventos_ativos if e.get("call_id") == after.channel.id), None)
+                        if evento:
+                            await registrar_checkin(id_str, evento["conteudo"], after.channel.id)
+        except Exception as e:
+            pass
 
 
 async def setup(bot):

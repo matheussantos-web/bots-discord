@@ -63,6 +63,7 @@ if MONGO_URI:
     colecao_tempo_call = db["tempo_call"]
     colecao_templates = db["templates"]
     colecao_eventos = db["eventos"]
+    colecao_checkin = db["checkin"]
 else:
     colecao_pontos = None
     colecao_sorteio_config = None
@@ -70,4 +71,5 @@ else:
     colecao_tempo_call = None
     colecao_templates = None
     colecao_eventos = None
+    colecao_checkin = None
     print("⚠️ MONGO_URI não encontrada!")

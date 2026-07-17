@@ -2,11 +2,13 @@ import discord
 import re
 import json
 import os
+import asyncio
 from discord import app_commands
 from discord.ext import commands
 from datetime import datetime, timedelta, timezone
 
 from config import CARGOS, MONGO_URI, colecao_templates, colecao_eventos
+from checkin_helper import registrar_checkin, finalizar_checkin, obter_checkins
 
 FUSO = timezone(timedelta(hours=-3))
 
@@ -177,14 +179,23 @@ def eh_texto_de_horario(texto: str) -> bool:
 # CLASSES DE INTERFACE (BOTÕES E PAINÉIS)
 # ==========================================
 
-class BotaoDinamico(discord.ui.Button):
-    def __init__(self, classe_nome, view_pai):
-        super().__init__(label=classe_nome, style=discord.ButtonStyle.secondary)
-        self.classe_nome = classe_nome
+class SelectClasses(discord.ui.Select):
+    def __init__(self, view_pai):
         self.view_pai = view_pai
+        opcoes = []
+        for classe, vagas_totais in view_pai.max_vagas.items():
+            inscritos = view_pai.jogadores.get(classe, [])
+            texto = f"{len(inscritos)}/{vagas_totais} inscritos"
+            opcoes.append(discord.SelectOption(label=classe[:100], value=classe, description=texto))
+        super().__init__(
+            placeholder="Escolha uma classe para entrar...",
+            options=opcoes[:25],
+            row=0,
+        )
 
     async def callback(self, interaction: discord.Interaction):
-        await self.view_pai.processar_clique(interaction, self.classe_nome)
+        classe = self.values[0]
+        await self.view_pai.processar_clique(interaction, classe)
 
 
 class ModalPuxarMembro(discord.ui.Modal, title="👑 Puxar Membro para a PT"):
@@ -236,28 +247,29 @@ class ModalPuxarMembro(discord.ui.Modal, title="👑 Puxar Membro para a PT"):
 
 
 class PainelVagas(discord.ui.View):
-    def __init__(self, conteudo, definicao_vagas, autor_id, unix_timestamp=None, descricao=None):
+    def __init__(self, conteudo, definicao_vagas, autor_id, unix_timestamp=None, descricao=None, call_id=None):
         super().__init__(timeout=None)
         self.conteudo = conteudo
         self.max_vagas = definicao_vagas
         self.autor_id = autor_id
         self.unix_timestamp = unix_timestamp
         self.descricao = descricao
+        self.call_id = call_id
         self.jogadores = {classe: [] for classe in definicao_vagas}
         self.fila_espera = {classe: [] for classe in definicao_vagas}
-        self.encerrado = False  # Controla se a PT foi finalizada
+        self.encerrado = False
 
-        # Adiciona os botões das classes
-        for classe in definicao_vagas.keys():
-            self.add_item(BotaoDinamico(classe, self))
+        # Select dropdown para classes (suporta até 25)
+        self.select_classes = SelectClasses(self)
+        self.add_item(self.select_classes)
 
         # Botão para Sair da Lista
-        botao_sair = discord.ui.Button(label="Sair da Lista", style=discord.ButtonStyle.danger, emoji="❌")
+        botao_sair = discord.ui.Button(label="Sair da Lista", style=discord.ButtonStyle.danger, emoji="❌", row=1)
         botao_sair.callback = self.sair_callback
         self.add_item(botao_sair)
 
         # Botão de Encerrar Conteúdo (Call Out)
-        botao_encerrar = discord.ui.Button(label="Encerrar PT", style=discord.ButtonStyle.secondary, emoji="🛑")
+        botao_encerrar = discord.ui.Button(label="Encerrar PT", style=discord.ButtonStyle.secondary, emoji="🛑", row=1)
         botao_encerrar.callback = self.encerrar_callback
         self.add_item(botao_encerrar)
 
@@ -265,6 +277,14 @@ class PainelVagas(discord.ui.View):
         botao_editar = discord.ui.Button(label="Editar", style=discord.ButtonStyle.primary, emoji="✏️", row=1)
         botao_editar.callback = self.editar_callback
         self.add_item(botao_editar)
+
+    def _atualizar_select(self):
+        novas_opcoes = []
+        for classe, vagas_totais in self.max_vagas.items():
+            inscritos = self.jogadores.get(classe, [])
+            texto = f"{len(inscritos)}/{vagas_totais} inscritos"
+            novas_opcoes.append(discord.SelectOption(label=classe[:100], value=classe, description=texto))
+        self.select_classes.options = novas_opcoes[:25]
 
     def gerar_embed(self):
         titulo_destaque = f"💥 {self.conteudo.upper()} 💥"
@@ -281,6 +301,8 @@ class PainelVagas(discord.ui.View):
         desc_embed = f"**Líder da PT:** <@{self.autor_id}>\n**Status:** {status_texto}\n"
         if self.descricao:
             desc_embed += f"{self.descricao}\n"
+        if self.call_id:
+            desc_embed += f"🔊 **Call:** <#{self.call_id}>\n"
         desc_embed += "━━━━━━━━━━━━━━━━━━━━━━\n"
 
         embed = discord.Embed(
@@ -289,7 +311,10 @@ class PainelVagas(discord.ui.View):
             color=cor_embed
         )
 
+        campos = 0
         for classe, vagas_totais in self.max_vagas.items():
+            if campos >= 25:
+                break
             inscritos = self.jogadores[classe]
             reserva = self.fila_espera[classe]
             texto_jogadores = "\n".join(inscritos) if inscritos else "*Vazio*"
@@ -301,6 +326,7 @@ class PainelVagas(discord.ui.View):
                 texto_final = texto_jogadores
 
             embed.add_field(name=f"🛡️ {classe} ({len(inscritos)}/{vagas_totais})", value=texto_final, inline=True)
+            campos += 1
 
         if self.encerrado:
             embed.set_footer(text="Esta PT foi encerrada pelo líder e não aceita mais inscrições.")
@@ -331,15 +357,18 @@ class PainelVagas(discord.ui.View):
 
         if len(self.jogadores[classe]) < self.max_vagas[classe]:
             self.jogadores[classe].append(usuario)
+            self._atualizar_select()
             await interaction.response.edit_message(embed=self.gerar_embed(), view=self)
         else:
             if usuario not in self.fila_espera[classe]:
                 self.fila_espera[classe].append(usuario)
+                self._atualizar_select()
                 await interaction.response.edit_message(embed=self.gerar_embed(), view=self)
                 await interaction.followup.send(f"📋 Fila de Espera para {classe}!", ephemeral=True)
 
         if classe_antiga and classe_antiga != classe:
             await self.promover_da_fila(interaction, classe_antiga)
+            self._atualizar_select()
             await interaction.message.edit(embed=self.gerar_embed(), view=self)
 
     async def sair_callback(self, interaction: discord.Interaction):
@@ -360,9 +389,11 @@ class PainelVagas(discord.ui.View):
                 removido = True
 
         if removido:
+            self._atualizar_select()
             await interaction.response.edit_message(embed=self.gerar_embed(), view=self)
             if classe_abandonada:
                 await self.promover_da_fila(interaction, classe_abandonada)
+                self._atualizar_select()
                 await interaction.message.edit(embed=self.gerar_embed(), view=self)
         else:
             await interaction.response.send_message("Você não está inscrito em nenhuma vaga.", ephemeral=True)
@@ -386,16 +417,76 @@ class PainelVagas(discord.ui.View):
 
         self.encerrer_painel()
 
-        # Atualiza o arquivo JSON para marcar o evento como encerrado
+        call_id = None
         eventos_atuais = await carregar_eventos()
         for evento in eventos_atuais:
             if evento.get("jump_url") == interaction.message.jump_url:
                 evento["encerrado"] = True
+                call_id = evento.get("call_id")
                 break
         await salvar_eventos(eventos_atuais)
 
-        await interaction.response.edit_message(embed=self.gerar_embed(), view=self)
-        await interaction.followup.send(f"🛑 **{interaction.user.display_name}** deu Call Out e encerrou o conteúdo: **{self.conteudo}**!")
+        if call_id:
+            try:
+                canal = interaction.guild.get_channel(call_id)
+                if canal:
+                    for membro in list(canal.members):
+                        if not membro.bot:
+                            await finalizar_checkin(str(membro.id), call_id)
+            except Exception:
+                pass
+
+            relatorio = await self._gerar_relatorio_checkin(call_id)
+            if relatorio:
+                await interaction.response.edit_message(embed=self.gerar_embed(), view=self)
+                await interaction.followup.send(f"🛑 **{interaction.user.display_name}** deu Call Out e encerrou o conteúdo: **{self.conteudo}**!")
+                await interaction.followup.send(embed=relatorio)
+            else:
+                await interaction.response.edit_message(embed=self.gerar_embed(), view=self)
+                await interaction.followup.send(f"🛑 **{interaction.user.display_name}** deu Call Out e encerrou o conteúdo: **{self.conteudo}**!")
+
+            try:
+                canal = interaction.guild.get_channel(call_id)
+                if canal:
+                    await canal.delete()
+            except Exception:
+                pass
+        else:
+            await interaction.response.edit_message(embed=self.gerar_embed(), view=self)
+            await interaction.followup.send(f"🛑 **{interaction.user.display_name}** deu Call Out e encerrou o conteúdo: **{self.conteudo}**!")
+
+    async def _gerar_relatorio_checkin(self, call_id):
+        checkins = await obter_checkins(call_id)
+        if not checkins:
+            return None
+
+        linhas_presentes = []
+        linhas_ausentes = []
+
+        for classe, jogadores in self.jogadores.items():
+            for jogador in jogadores:
+                user_id = jogador.strip("<@!>")
+                ci = next((c for c in checkins if c["user_id"] == user_id), None)
+                if ci and ci.get("minutos", 0) > 0:
+                    linhas_presentes.append(f"• {jogador} — {ci['minutos']} min")
+                else:
+                    linhas_ausentes.append(f"• {jogador}")
+
+        texto = ""
+        if linhas_presentes:
+            texto += "**✅ Presentes:**\n" + "\n".join(linhas_presentes) + "\n\n"
+        if linhas_ausentes:
+            texto += "**❌ Ausentes (inscrito mas não entrou na call):**\n" + "\n".join(linhas_ausentes)
+        if not texto:
+            texto = "Nenhum check-in registrado."
+
+        embed = discord.Embed(
+            title=f"📋 Presença — {self.conteudo}",
+            description=texto,
+            color=discord.Color.blue()
+        )
+        embed.set_footer(text="Relatório de check-in")
+        return embed
 
     def encerrer_painel(self):
         self.encerrado = True
@@ -471,12 +562,27 @@ class ModalEditarConteudo(discord.ui.Modal, title="✏️ Editar Conteúdo"):
             self.painel.jogadores[classe] = []
             self.painel.fila_espera[classe] = []
 
+        novas_opcoes = []
+        for classe, vagas_totais in definicao_vagas.items():
+            inscritos = self.painel.jogadores.get(classe, [])
+            texto = f"{len(inscritos)}/{vagas_totais} inscritos"
+            novas_opcoes.append(discord.SelectOption(label=classe[:100], value=classe, description=texto))
+        self.painel.select_classes.options = novas_opcoes[:25]
+
         eventos_atuais = await carregar_eventos()
         for evento in eventos_atuais:
             if evento.get("jump_url") == interaction.message.jump_url:
                 evento["conteudo"] = conteudo
                 break
         await salvar_eventos(eventos_atuais)
+
+        if self.painel.call_id:
+            try:
+                canal = interaction.guild.get_channel(self.painel.call_id)
+                if canal:
+                    await canal.edit(name=f"🎮 [DH] {conteudo[:50]}")
+            except Exception:
+                pass
 
         await interaction.response.edit_message(embed=self.painel.gerar_embed(), view=self.painel)
 
@@ -863,6 +969,7 @@ class LFG(commands.Cog):
         self.bot = bot
         self.eventos_ativos = []
         self.templates = {}
+        self.paineis_ativos = {}
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -883,11 +990,105 @@ class LFG(commands.Cog):
             embed.add_field(name=f"🛡️ {nome}", value=valor, inline=False)
         return embed
 
+    async def _criar_call_conteudo(self, guilda, autor, conteudo):
+        """Cria a voice channel de conteúdo. Retorna call_id ou None."""
+        try:
+            print(f"🎮 Tentando criar call: guild={guilda.name}, author={autor.display_name}")
+            categoria = None
+            for cat in guilda.categories:
+                if cat.name.lower() in ("conteúdos", "conteudos", "conteúdo", "conteudo"):
+                    categoria = cat
+                    break
+            call = await guilda.create_voice_channel(
+                name=f"🎮 [DH] {conteudo[:50]}",
+                category=categoria,
+                overwrites={
+                    guilda.default_role: discord.PermissionOverwrite(view_channel=True, connect=True),
+                    autor: discord.PermissionOverwrite(view_channel=True, connect=True, manage_channels=True),
+                }
+            )
+            print(f"✅ Call criada com sucesso! ID: {call.id}")
+            return call.id
+        except Exception as e:
+            print(f"⚠️ Erro ao criar call de conteúdo: {type(e).__name__}: {e}")
+            return None
+
+    async def _agendar_criacao_call(self, guilda, autor_id, conteudo, mensagem_id, jump_url, unix_timestamp):
+        """Aguarda até 30 min antes do horário e cria a call + lembrete."""
+        from datetime import datetime, timezone
+        agora = datetime.now(timezone.utc)
+        momento_call = unix_timestamp - (30 * 60)
+        segundos_ate = momento_call - int(agora.timestamp())
+
+        if segundos_ate <= 0:
+            segundos_ate = 1
+
+        print(f"⏰ Call agendada para {conteudo} em {segundos_ate}s ({segundos_ate // 60} min)")
+        await asyncio.sleep(segundos_ate)
+
+        for evento in self.eventos_ativos:
+            if evento.get("jump_url") == jump_url and not evento.get("encerrado"):
+                autor = guilda.get_member(autor_id)
+                if not autor:
+                    return
+
+                call_id = await self._criar_call_conteudo(guilda, autor, conteudo)
+                evento["call_id"] = call_id
+                await salvar_eventos(self.eventos_ativos)
+
+                if call_id:
+                    try:
+                        canal_msg = guilda.get_channel(int(jump_url.split("/")[-2]))
+                        if canal_msg:
+                            msg = await canal_msg.fetch_message(int(jump_url.split("/")[-1]))
+                            if msg and msg.embeds:
+                                embed_antigo = msg.embeds[0]
+                                desc = embed_antigo.description
+                                if "🔊 **Call:**" not in desc:
+                                    desc = desc.replace("━━━━━━━━━━━━━━━━━━━━━━", f"🔊 **Call:** <#{call_id}>\n━━━━━━━━━━━━━━━━━━━━━━")
+                                embed_novo = embed_antigo.copy()
+                                embed_novo.description = desc
+                                await msg.edit(embed=embed_novo)
+                                painel = self.paineis_ativos.get(msg.id)
+                                if painel:
+                                    inscritos = set()
+                                    for lista in painel.jogadores.values():
+                                        for mencao in lista:
+                                            uid = mencao.strip("<@!>")
+                                            if uid.isdigit():
+                                                inscritos.add(int(uid))
+                                    inscritos.add(autor_id)
+                                    for uid in inscritos:
+                                        membro = guilda.get_member(uid)
+                                        if membro:
+                                            try:
+                                                await membro.send(
+                                                    f"🎮 **Call pronta!** A call do conteúdo **{conteudo}** foi criada!\n"
+                                                    f"Entre aqui: <#{call_id}>"
+                                                )
+                                            except Exception:
+                                                pass
+                    except Exception:
+                        pass
+                break
+
     async def publicar_painel(self, interaction: discord.Interaction, conteudo, definicao_vagas, descricao, horario_input):
         """Cria e posta o painel de vagas — usado tanto pelo fluxo 'do zero' quanto por template."""
         unix_timestamp = interpretar_horario(horario_input) if horario_input else None
 
-        painel = PainelVagas(conteudo, definicao_vagas, interaction.user.id, unix_timestamp, descricao)
+        call_id = None
+        if unix_timestamp:
+            from datetime import datetime, timezone
+            agora_ts = int(datetime.now(timezone.utc).timestamp())
+            segundos_ate = unix_timestamp - agora_ts
+            if segundos_ate > 30 * 60:
+                call_id = None
+            else:
+                call_id = await self._criar_call_conteudo(interaction.guild, interaction.user, conteudo)
+        else:
+            call_id = await self._criar_call_conteudo(interaction.guild, interaction.user, conteudo)
+
+        painel = PainelVagas(conteudo, definicao_vagas, interaction.user.id, unix_timestamp, descricao, call_id)
         embed_inicial = painel.gerar_embed()
 
         id_cargo_membro = CARGOS.get("DIE HARD")
@@ -895,6 +1096,7 @@ class LFG(commands.Cog):
 
         await interaction.response.send_message(content=f"📢 {mencao_cargo}", embed=embed_inicial, view=painel)
         mensagem_painel = await interaction.original_response()
+        self.paineis_ativos[mensagem_painel.id] = painel
 
         self.eventos_ativos.append({
             "conteudo": conteudo,
@@ -902,8 +1104,15 @@ class LFG(commands.Cog):
             "unix_timestamp": unix_timestamp,
             "jump_url": mensagem_painel.jump_url,
             "encerrado": False,
+            "call_id": call_id,
         })
         await salvar_eventos(self.eventos_ativos)
+
+        if unix_timestamp and not call_id:
+            asyncio.create_task(self._agendar_criacao_call(
+                interaction.guild, interaction.user.id, conteudo,
+                mensagem_painel.id, mensagem_painel.jump_url, unix_timestamp
+            ))
 
     @app_commands.command(name="content", description="Criar um painel de vagas para organizar conteúdo em grupo")
     async def content(self, interaction: discord.Interaction):
@@ -955,6 +1164,51 @@ class LFG(commands.Cog):
                 value=f"**Líder:** <@{evento['autor_id']}>\n**Quando:** {quando}\n[Ir para a PT]({evento['jump_url']})",
                 inline=False
             )
+
+        await ctx.send(embed=embed)
+
+    @commands.command(name="checkin")
+    async def checkin(self, ctx):
+        call_id = None
+        for evento in self.eventos_ativos:
+            if not evento.get("encerrado") and evento.get("call_id"):
+                call_id = evento["call_id"]
+                break
+
+        if not call_id:
+            return await ctx.send("❌ Nenhuma PT ativa com call encontrada.")
+
+        canal = ctx.guild.get_channel(call_id)
+        if not canal:
+            return await ctx.send("❌ Call não encontrada.")
+
+        checkins = await obter_checkins(call_id)
+
+        embed = discord.Embed(
+            title=f"📋 Check-in — {canal.name.replace('🎮 ', '')}",
+            color=discord.Color.blue()
+        )
+
+        presentes = []
+        for membro in canal.members:
+            if not membro.bot:
+                ci = next((c for c in checkins if c["user_id"] == str(membro.id)), None)
+                if ci:
+                    entrada = ci["entrou_em"]
+                    if isinstance(entrada, datetime):
+                        if entrada.tzinfo is None:
+                            entrada = entrada.replace(tzinfo=timezone.utc)
+                        minutos = int((datetime.now(timezone.utc) - entrada).total_seconds() / 60)
+                        presentes.append(f"• {membro.mention} — {minutos} min")
+                    else:
+                        presentes.append(f"• {membro.mention}")
+                else:
+                    presentes.append(f"• {membro.mention} — recém-chegou")
+
+        if presentes:
+            embed.description = f"**Presentes na call:** {len(presentes)}\n\n" + "\n".join(presentes)
+        else:
+            embed.description = "Nenhum membro na call no momento."
 
         await ctx.send(embed=embed)
 
